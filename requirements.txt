@@ -1,7 +1,4 @@
 requests
 feedparser
 beautifulsoup4
-google-authrequests
-feedparser
-beautifulsoup4
 google-auth
