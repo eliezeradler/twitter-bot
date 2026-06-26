@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write
-  id-token: write # חובה לחיבור המאובטח של גוגל
+  id-token: write
 
 jobs:
   run-bot:
@@ -39,5 +39,5 @@ jobs:
       - name: Commit state file
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Update last processed tweet ID"
-          file_pattern: last_id.txt
+          commit_message: "Update last processed tweet IDs"
+          file_pattern: last_ids.json
