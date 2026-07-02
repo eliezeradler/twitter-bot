@@ -12,12 +12,14 @@ RSS_URLS = [url.strip() for url in RSS_URLS_ENV.split(',')] if RSS_URLS_ENV else
 STATE_FILE = 'last_ids.json'
 
 def get_auth_token():
+    print("Authenticating with Google Chat...")
     credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/chat.bot'])
     credentials.refresh(Request())
     return credentials.token
 
 def upload_media_to_chat(token, media_url, filename):
     try:
+        print(f"Downloading media: {media_url}")
         media_response = requests.get(media_url, timeout=30)
         media_response.raise_for_status()
         media_data = media_response.content
@@ -36,8 +38,9 @@ def upload_media_to_chat(token, media_url, filename):
         return None
 
 def main():
+    print(f"Starting bot... Found {len(RSS_URLS)} URLs to process.")
     if not RSS_URLS:
-        print("No RSS URLs found.")
+        print("No RSS URLs found. Exiting.")
         return
 
     states = {}
@@ -45,17 +48,24 @@ def main():
         with open(STATE_FILE, 'r') as f:
             try:
                 states = json.load(f)
+                print(f"Loaded previous state: {states}")
             except Exception:
-                pass
+                print("Could not read state file, starting fresh.")
+    else:
+        print("No state file found. This is a fresh run.")
             
-    token = get_auth_token()
+    token = None
     
     for rss_url in RSS_URLS:
         if not rss_url:
             continue
             
+        print(f"\n--- Checking feed: {rss_url} ---")
         feed = feedparser.parse(rss_url)
+        print(f"Feed entries found: {len(feed.entries)}")
+        
         last_id = states.get(rss_url, "")
+        print(f"Last processed ID for this feed: {last_id}")
         
         new_items = []
         for entry in feed.entries:
@@ -64,14 +74,26 @@ def main():
                 break
             new_items.append(entry)
             
+        print(f"Found {len(new_items)} new items.")
+        
+        # מניעת הצפה בריצה הראשונה
+        if not last_id and len(new_items) > 2:
+            print("First run detected. Limiting to 2 items to prevent spam.")
+            new_items = new_items[:2]
+
         if not new_items:
+            print("No new items to post for this feed.")
             continue
             
         new_items.reverse()
         
+        if not token:
+            token = get_auth_token()
+        
         for item in new_items:
             text = getattr(item, 'title', '')
             link = getattr(item, 'link', '')
+            print(f"Attempting to post item: {text[:30]}...")
             
             media_url = ""
             filename = "attachment.jpg" 
@@ -111,12 +133,17 @@ def main():
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"
             }
-            requests.post(msg_url, headers=headers, json=message_payload)
+            res = requests.post(msg_url, headers=headers, json=message_payload)
+            if res.status_code == 200:
+                print("Message sent to Google Chat successfully!")
+            else:
+                print(f"FAILED to send message to Google Chat: {res.text}")
                 
         states[rss_url] = getattr(new_items[-1], 'id', getattr(new_items[-1], 'link', ''))
         
     with open(STATE_FILE, 'w') as f:
         json.dump(states, f)
+        print("\nSaved new state to file.")
 
 if __name__ == "__main__":
     main()
