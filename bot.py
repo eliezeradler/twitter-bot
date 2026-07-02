@@ -48,11 +48,9 @@ def main():
         with open(STATE_FILE, 'r') as f:
             try:
                 states = json.load(f)
-                print(f"Loaded previous state: {states}")
+                print(f"Loaded previous state.")
             except Exception:
-                print("Could not read state file, starting fresh.")
-    else:
-        print("No state file found. This is a fresh run.")
+                pass
             
     token = None
     
@@ -62,10 +60,8 @@ def main():
             
         print(f"\n--- Checking feed: {rss_url} ---")
         feed = feedparser.parse(rss_url)
-        print(f"Feed entries found: {len(feed.entries)}")
         
         last_id = states.get(rss_url, "")
-        print(f"Last processed ID for this feed: {last_id}")
         
         new_items = []
         for entry in feed.entries:
@@ -78,11 +74,9 @@ def main():
         
         # מניעת הצפה בריצה הראשונה
         if not last_id and len(new_items) > 2:
-            print("First run detected. Limiting to 2 items to prevent spam.")
             new_items = new_items[:2]
 
         if not new_items:
-            print("No new items to post for this feed.")
             continue
             
         new_items.reverse()
@@ -93,57 +87,62 @@ def main():
         for item in new_items:
             text = getattr(item, 'title', '')
             link = getattr(item, 'link', '')
-            print(f"Attempting to post item: {text[:30]}...")
             
             media_url = ""
             filename = "attachment.jpg" 
             
+            # 1. חיפוש תמונה רגיל (Enclosures)
             if hasattr(item, 'enclosures') and item.enclosures:
                 enc = item.enclosures[0]
-                media_url = enc.get('url', '')
-                enc_type = enc.get('type', '')
-                if 'video' in enc_type or media_url.endswith('.mp4'):
-                    filename = "video_content.mp4"
-                else:
-                    filename = "image_content.jpg"
-                    
-            if not media_url and hasattr(item, 'description'):
-                soup = BeautifulSoup(item.description, 'html.parser')
-                video_tag = soup.find('video')
-                if video_tag and video_tag.get('src'):
-                    media_url = video_tag['src']
-                    filename = "video_content.mp4"
-                else:
-                    img_tag = soup.find('img')
-                    if img_tag and img_tag.get('src'):
-                        media_url = img_tag['src']
-                        filename = "image_content.jpg"
+                media_url = enc.get('href', enc.get('url', ''))
+                
+            # 2. חיפוש תמונה מתקדם (Media Content)
+            if not media_url and hasattr(item, 'media_content') and item.media_content:
+                media_url = item.media_content[0].get('url', '')
+
+            # 3. חילוץ תמונות מתוך גוף הכתבה (השיטה של JDN)
+            if not media_url:
+                html_content = ""
+                if hasattr(item, 'content'):
+                    html_content = item.content[0].value
+                elif hasattr(item, 'description'):
+                    html_content = item.description
+                
+                if html_content:
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    video_tag = soup.find('video')
+                    if video_tag and video_tag.get('src'):
+                        media_url = video_tag['src']
+                        filename = "video_content.mp4"
+                    else:
+                        img_tag = soup.find('img')
+                        if img_tag and img_tag.get('src'):
+                            media_url = img_tag['src']
+                            filename = "image_content.jpg"
             
             message_payload = {
                 "text": f"{text}\n\n🔗 מקור: {link}"
             }
             
             if media_url:
+                print(f"Found media URL: {media_url}")
                 attachment_id = upload_media_to_chat(token, media_url, filename)
                 if attachment_id:
                     message_payload["attachment"] = [{"attachmentDataRef": {"resourceName": attachment_id}}]
+            else:
+                print("No media found for this item.")
                     
             msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"
             }
-            res = requests.post(msg_url, headers=headers, json=message_payload)
-            if res.status_code == 200:
-                print("Message sent to Google Chat successfully!")
-            else:
-                print(f"FAILED to send message to Google Chat: {res.text}")
+            requests.post(msg_url, headers=headers, json=message_payload)
                 
         states[rss_url] = getattr(new_items[-1], 'id', getattr(new_items[-1], 'link', ''))
         
     with open(STATE_FILE, 'w') as f:
         json.dump(states, f)
-        print("\nSaved new state to file.")
 
 if __name__ == "__main__":
     main()
