@@ -1,26 +1,17 @@
-name: Push Tweets to Google Chat
+name: RSS to Google Chat Bot
 
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-  id-token: write
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v1
-        with:
-          workload_identity_provider: 'projects/516998943557/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
-          service_account: 'twitter-bot@stellar-store-500600-v1.iam.gserviceaccount.com'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -28,16 +19,15 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedparser beautifulsoup4 google-auth google-auth-oauthlib google-auth-httplib2
 
-      - name: Execute script
+      - name: Run bot.py
         env:
           CHAT_SPACE: ${{ secrets.CHAT_SPACE }}
           RSS_URL: ${{ secrets.RSS_URL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: python bot.py
-
-      - name: Commit state file
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update last processed tweet IDs"
-          file_pattern: last_ids.json
