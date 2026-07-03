@@ -34,15 +34,24 @@ def upload_media_to_chat(token, media_url, filename):
         res_media = requests.get(media_url, timeout=30)
         res_media.raise_for_status()
         
-        upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}"
+        # הוספנו את uploadType=media כדי שגוגל יקבל את הקובץ
+        upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/octet-stream"
         }
-        res = requests.post(upload_url, headers=headers, data=res_media.content)
-        res.raise_for_status()
         
-        return res.json().get('attachmentDataRef', {}).get('resourceName')
+        print("Uploading file to Google Chat servers...")
+        res = requests.post(upload_url, headers=headers, data=res_media.content)
+        
+        if res.status_code != 200:
+            print(f"Upload failed with status {res.status_code}: {res.text}")
+            return None
+            
+        data = res.json()
+        print(f"Upload successful. Response: {json.dumps(data)}")
+        return data.get('attachmentDataRef', {}).get('resourceName')
+        
     except Exception as e:
         print(f"Error uploading: {e}")
         return None
@@ -58,7 +67,7 @@ def main():
     token = None
     for rss_url in RSS_URLS:
         if not rss_url: continue
-        print(f"Checking feed: {rss_url}")
+        print(f"\nChecking feed: {rss_url}")
         feed = feedparser.parse(rss_url)
         last_id = states.get(rss_url, "")
         
@@ -106,12 +115,20 @@ def main():
             if media_url:
                 attachment_id = upload_media_to_chat(token, media_url, filename)
                 if attachment_id:
+                    print(f"Attaching file to message...")
                     payload["attachment"] = [{"attachmentDataRef": {"resourceName": attachment_id}}]
+                else:
+                    print("No attachment generated, sending text only.")
             
             msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            
+            print("Sending final message...")
             res = requests.post(msg_url, headers=headers, json=payload)
-            if res.status_code != 200: print(f"Error posting: {res.text}")
+            if res.status_code == 200:
+                print("Message sent successfully!")
+            else:
+                print(f"Error posting message: {res.text}")
                 
         states[rss_url] = getattr(new_items[-1], 'id', getattr(new_items[-1], 'link', ''))
         
