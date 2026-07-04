@@ -34,7 +34,6 @@ def upload_media_to_chat(token, media_url, filename):
         res_media = requests.get(media_url, timeout=30)
         res_media.raise_for_status()
         
-        # הוספנו את uploadType=media כדי שגוגל יקבל את הקובץ
         upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
         headers = {
             "Authorization": f"Bearer {token}",
@@ -45,12 +44,12 @@ def upload_media_to_chat(token, media_url, filename):
         res = requests.post(upload_url, headers=headers, data=res_media.content)
         
         if res.status_code != 200:
-            print(f"Upload failed with status {res.status_code}: {res.text}")
+            print(f"Upload failed: {res.text}")
             return None
             
         data = res.json()
-        print(f"Upload successful. Response: {json.dumps(data)}")
-        return data.get('attachmentDataRef', {}).get('resourceName')
+        # החילוץ הנכון של ה-resourceName מהתגובה
+        return data.get('resourceName')
         
     except Exception as e:
         print(f"Error uploading: {e}")
@@ -89,6 +88,7 @@ def main():
             media_url = ""
             filename = "attachment.jpg"
             
+            # לוגיקת זיהוי מדיה
             if hasattr(item, 'enclosures') and item.enclosures:
                 enc = item.enclosures[0]
                 media_url = enc.get('href', enc.get('url', ''))
@@ -98,37 +98,22 @@ def main():
             if not media_url and hasattr(item, 'media_content') and item.media_content:
                 media_url = item.media_content[0].get('url', '')
 
-            if not media_url:
-                html_content = getattr(item, 'content', [{'value': ''}])[0].get('value', '') if hasattr(item, 'content') else getattr(item, 'description', '')
-                if html_content:
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    vid = soup.find('video')
-                    if vid and vid.get('src'):
-                        media_url = vid['src']
-                        filename = "video.mp4"
-                    else:
-                        img = soup.find('img')
-                        if img and img.get('src'): media_url = img['src']
-            
             payload = {"text": f"{text}\n\n🔗 מקור: {link}"}
             
             if media_url:
                 attachment_id = upload_media_to_chat(token, media_url, filename)
                 if attachment_id:
-                    print(f"Attaching file to message...")
+                    print(f"Attaching resource: {attachment_id}")
                     payload["attachment"] = [{"attachmentDataRef": {"resourceName": attachment_id}}]
-                else:
-                    print("No attachment generated, sending text only.")
             
             msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             
-            print("Sending final message...")
             res = requests.post(msg_url, headers=headers, json=payload)
             if res.status_code == 200:
                 print("Message sent successfully!")
             else:
-                print(f"Error posting message: {res.text}")
+                print(f"Error posting: {res.text}")
                 
         states[rss_url] = getattr(new_items[-1], 'id', getattr(new_items[-1], 'link', ''))
         
