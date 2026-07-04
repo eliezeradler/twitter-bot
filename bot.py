@@ -48,8 +48,8 @@ def upload_media_to_chat(token, media_url, filename):
             return None
             
         data = res.json()
-        # החילוץ הנכון של ה-resourceName מהתגובה
-        return data.get('resourceName')
+        # התיקון הקריטי: שימוש בשם המפתח הנכון שגוגל מחזירה - attachmentUploadToken
+        return data.get('attachmentDataRef', {}).get('attachmentUploadToken')
         
     except Exception as e:
         print(f"Error uploading: {e}")
@@ -88,7 +88,6 @@ def main():
             media_url = ""
             filename = "attachment.jpg"
             
-            # לוגיקת זיהוי מדיה
             if hasattr(item, 'enclosures') and item.enclosures:
                 enc = item.enclosures[0]
                 media_url = enc.get('href', enc.get('url', ''))
@@ -101,10 +100,11 @@ def main():
             payload = {"text": f"{text}\n\n🔗 מקור: {link}"}
             
             if media_url:
-                attachment_id = upload_media_to_chat(token, media_url, filename)
-                if attachment_id:
-                    print(f"Attaching resource: {attachment_id}")
-                    payload["attachment"] = [{"attachmentDataRef": {"resourceName": attachment_id}}]
+                attachment_token = upload_media_to_chat(token, media_url, filename)
+                if attachment_token:
+                    print("Attaching file using upload token...")
+                    # התיקון השני: צירוף הקובץ להודעה עם השם הנכון
+                    payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": attachment_token}}]
             
             msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
