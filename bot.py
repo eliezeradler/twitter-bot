@@ -8,7 +8,9 @@ import requests
 
 SPACE_NAME = os.environ.get('CHAT_SPACE')
 RSS_URLS_ENV = os.environ.get('RSS_URL', '')
-RSS_URLS = [url.strip() for url in RSS_URLS_ENV.split(',')] if RSS_URLS_ENV else []
+# מחליף ירידות שורה בפסיקים כדי שהקוד יתמוך גם ברשימה
+RSS_URLS_ENV = RSS_URLS_ENV.replace('\n', ',').replace('\r', ',')
+RSS_URLS = [url.strip() for url in RSS_URLS_ENV.split(',') if url.strip()]
 STATE_FILE = 'last_ids.json'
 
 CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
