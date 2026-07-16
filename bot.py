@@ -76,6 +76,7 @@ def main():
         if not rss_url: continue
         print(f"\nChecking feed: {rss_url}")
         feed = feedparser.parse(rss_url)
+        feed_title = getattr(feed.feed, 'title', 'מקור לא ידוע')
         last_id = states.get(rss_url, "")
         
         new_items = []
@@ -136,7 +137,7 @@ def main():
                         img = soup.find('img')
                         if img and img.get('src'): media_url = img['src']
 
-            payload = {"text": f"{text}\n\n🔗 מקור: {link}"}
+            payload = {"text": f"*{feed_title}*\n\n{text}\n\n🔗 מקור: {link}"}
             
             if media_url:
                 attachment_token = upload_media_to_chat(token, media_url, filename)
