@@ -89,7 +89,25 @@ def main():
         if not token: token = get_user_credentials()
         
         for item in new_items:
-            text = getattr(item, 'title', '')
+            # משיכת הכותרת והתוכן המלא
+            raw_title = getattr(item, 'title', '')
+            raw_desc = getattr(item, 'description', '')
+            
+            if raw_desc:
+                # ניקוי קוד HTML מתוך התוכן המלא באמצעות BeautifulSoup
+                soup = BeautifulSoup(raw_desc, 'html.parser')
+                # הפיכת תגיות שבירת שורה לירידות שורה רגילות בטקסט
+                for br in soup.find_all("br"):
+                    br.replace_with("\n")
+                
+                # חילוץ הטקסט הנקי
+                text = soup.get_text().strip()
+                
+                # לפעמים RSSHub שם רק תמונה בתוכן והטקסט נשאר בכותרת, אז נוודא שלא קיבלנו טקסט ריק
+                if not text:
+                    text = raw_title.strip()
+            else:
+                text = raw_title.strip()
             link = getattr(item, 'link', '')
             media_url = ""
             filename = "attachment.jpg"
