@@ -137,7 +137,12 @@ def main():
                         img = soup.find('img')
                         if img and img.get('src'): media_url = img['src']
 
-            payload = {"text": f"*{feed_title}*\n\n{text}\n\n🔗 מקור: {link}"}
+            # ניקוי שם המקור מהמילים המבוקשות וסימני פיסוק מיותרים
+            clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
+            clean_title = clean_title.strip("•").strip()
+            
+            # בניית ההודעה ללא הקישור בסוף
+            payload = {"text": f"*{clean_title}*\n\n{text}"}
             
             if media_url:
                 attachment_token = upload_media_to_chat(token, media_url, filename)
