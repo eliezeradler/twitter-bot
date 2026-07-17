@@ -70,7 +70,12 @@ def main():
         with open(STATE_FILE, 'r') as f:
             try: states = json.load(f)
             except: pass
-            
+      # טעינת מילון החדרים מקובץ חיצוני
+    space_mapping = {}
+    if os.path.exists('spaces.json'):
+        with open('spaces.json', 'r', encoding='utf-8') as f:
+            try: space_mapping = json.load(f)
+            except: pass      
     token = None
     for rss_url in RSS_URLS:
         if not rss_url: continue
@@ -150,7 +155,9 @@ def main():
                     print("Attaching file using upload token...")
                     payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": attachment_token}}]
             
-            msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
+            # ניתוב לחדר הספציפי או לחדר ברירת המחדל
+            current_space = space_mapping.get(rss_url, SPACE_NAME)
+            msg_url = f"https://chat.googleapis.com/v1/{current_space}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             
             res = requests.post(msg_url, headers=headers, json=payload)
