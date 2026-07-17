@@ -70,22 +70,6 @@ def main():
         with open(STATE_FILE, 'r') as f:
             try: states = json.load(f)
             except: pass
-states = {}
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            try: states = json.load(f)
-            except: pass
-
-    space_mapping = {}
-    if os.path.exists('spaces.json'):
-        with open('spaces.json', 'r', encoding='utf-8') as f:
-            try:
-                space_mapping = json.load(f)
-                print(f"Successfully loaded {len(space_mapping)} spaces from JSON.")
-            except Exception as e:
-                print(f"ERROR reading spaces.json: {e}")
-    else:
-        print("WARNING: spaces.json file not found in the directory!")
 
     token = None
     for rss_url in RSS_URLS:
@@ -166,9 +150,7 @@ states = {}
                     print("Attaching file using upload token...")
                     payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": attachment_token}}]
             
-            # ניתוב לחדר הספציפי או לחדר ברירת המחדל
-            current_space = space_mapping.get(rss_url, SPACE_NAME)
-            msg_url = f"https://chat.googleapis.com/v1/{current_space}/messages"
+            msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             
             res = requests.post(msg_url, headers=headers, json=payload)
