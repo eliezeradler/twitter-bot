@@ -70,7 +70,13 @@ def main():
         with open(STATE_FILE, 'r') as f:
             try: states = json.load(f)
             except: pass
-      space_mapping = {}
+states = {}
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, 'r') as f:
+            try: states = json.load(f)
+            except: pass
+
+    space_mapping = {}
     if os.path.exists('spaces.json'):
         with open('spaces.json', 'r', encoding='utf-8') as f:
             try:
@@ -79,7 +85,8 @@ def main():
             except Exception as e:
                 print(f"ERROR reading spaces.json: {e}")
     else:
-        print("WARNING: spaces.json file not found in the directory!")      
+        print("WARNING: spaces.json file not found in the directory!")
+
     token = None
     for rss_url in RSS_URLS:
         if not rss_url: continue
