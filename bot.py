@@ -142,7 +142,7 @@ def main():
             
             # 1. מניעת כפילויות מאותו מקור
             if entry_id in last_ids:
-                continue
+                break
 
             # 2. מניעת כפילויות ממקורות שונים
             item_title = getattr(entry, 'title', '').strip()
