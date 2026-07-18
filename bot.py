@@ -73,6 +73,7 @@ AD_WORDS = [
     "לשליחת קורות חיים",
     "לפרטים והרשמה",
     "הלינק",
+    "השאירו פרטים",
     "מספר המקומות מוגבל",
     "השאירו פרטים",
     "אסור לכם לפספס",
@@ -98,7 +99,7 @@ def clean_text(text):
         return ""
     # הסרת קישורי טלגרם
     cleaned = re.sub(r'(https?://)?t\.me/[^\s]+', '', text)
-    # הסרת קישורי אינטרנט רגילים (אופציונלי - אם תרצה להשאיר קישורים רגילים, מחק שורה זו)
+    # הסרת קישורי אינטרנט רגילים
     cleaned = re.sub(r'https?://[^\s]+', '', cleaned)
     # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
     return cleaned.strip()
@@ -111,63 +112,70 @@ def main():
             try: states = json.load(f)
             except: pass
 
+    # הבטחת קיום רשימת כותרות גלובלית למניעת כפילויות ממקורות שונים
+    if "global_seen_titles" not in states:
+        states["global_seen_titles"] = []
+
     token = None
     for rss_url in RSS_URLS:
         if not rss_url: continue
         print(f"\nChecking feed: {rss_url}")
         feed = feedparser.parse(rss_url)
         feed_title = getattr(feed.feed, 'title', 'מקור לא ידוע')
-        last_id = states.get(rss_url, "")
+        
+        # הפיכת הזיכרון הישן (טקסט) לרשימה חכמה
+        last_ids = states.get(rss_url, [])
+        if isinstance(last_ids, str): 
+            last_ids = [last_ids]
         
         new_items = []
         for entry in feed.entries:
-            # שליפת הטקסט של ההודעה
             post_text = entry.get('summary', entry.get('title', ''))
 
-            # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה (ההזחה תוקנה כאן)
             if is_ad(post_text):
                 print("Ad detected, skipping message.")
                 continue
 
             entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
-            if entry_id == last_id: break
+            
+            # 1. מניעת כפילויות מאותו מקור
+            if entry_id in last_ids:
+                continue
+
+            # 2. מניעת כפילויות ממקורות שונים
+            item_title = getattr(entry, 'title', '').strip()
+            if item_title and item_title in states["global_seen_titles"]:
+                print("Duplicate content from another source, skipping.")
+                continue
+
             new_items.append(entry)
             
-        if not last_id and len(new_items) > 2: new_items = new_items[:2]
+        if not last_ids and len(new_items) > 2: new_items = new_items[:2]
         if not new_items: continue
-        new_items.reverse()
         
+        new_items.reverse()
         if not token: token = get_user_credentials()
         
         for item in new_items:
-            # משיכת הכותרת והתוכן המלא
             raw_title = getattr(item, 'title', '')
             raw_desc = getattr(item, 'description', '')
             
             if raw_desc:
-                # ניקוי קוד HTML מתוך התוכן המלא באמצעות BeautifulSoup
                 soup = BeautifulSoup(raw_desc, 'html.parser')
-                # הפיכת תגיות שבירת שורה לירידות שורה רגילות בטקסט
                 for br in soup.find_all("br"):
                     br.replace_with("\n")
-                
-                # חילוץ הטקסט הנקי
                 text = soup.get_text().strip()
-                
-                # לפעמים RSSHub שם רק תמונה בתוכן והטקסט נשאר בכותרת, אז נוודא שלא קיבלנו טקסט ריק
                 if not text:
                     text = raw_title.strip()
             else:
                 text = raw_title.strip()
             
-            # 2. הפעלת ניקוי הקישורים על הטקסט הסופי שיוצג בצ'אט
             text = clean_text(text)
             
             link = getattr(item, 'link', '')
             media_url = ""
             filename = "attachment.jpg"
             
-            # לוגיקת זיהוי מדיה
             if hasattr(item, 'enclosures') and item.enclosures:
                 enc = item.enclosures[0]
                 media_url = enc.get('href', enc.get('url', ''))
@@ -189,11 +197,9 @@ def main():
                         img = soup.find('img')
                         if img and img.get('src'): media_url = img['src']
 
-            # ניקוי שם המקור מהמילים המבוקשות וסימני פיסוק מיותרים
             clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
             clean_title = clean_title.strip("•").strip()
             
-            # בניית ההודעה
             payload = {"text": f"*{clean_title}*\n\n{text}"}
             
             if media_url:
@@ -208,10 +214,23 @@ def main():
             res = requests.post(msg_url, headers=headers, json=payload)
             if res.status_code == 200:
                 print("Message sent successfully!")
+                
+                # עדכון הזיכרון רק אם ההודעה נשלחה בהצלחה
+                entry_id = getattr(item, 'id', getattr(item, 'link', ''))
+                item_title = getattr(item, 'title', '').strip()
+                
+                if entry_id not in last_ids:
+                    last_ids.append(entry_id)
+                if item_title and item_title not in states["global_seen_titles"]:
+                    states["global_seen_titles"].append(item_title)
             else:
                 print(f"Error posting: {res.text}")
                 
-        states[rss_url] = getattr(new_items[-1], 'id', getattr(new_items[-1], 'link', ''))
+        # שמירת 50 המזהים האחרונים לכל ערוץ
+        states[rss_url] = last_ids[-50:]
+        
+    # שמירת 100 הכותרות האחרונות גלובלית
+    states["global_seen_titles"] = states["global_seen_titles"][-100:]
         
     with open(STATE_FILE, 'w') as f:
         json.dump(states, f)
