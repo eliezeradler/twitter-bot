@@ -63,6 +63,7 @@ def upload_media_to_chat(token, media_url, filename):
     except Exception as e:
         print(f"Error uploading: {e}")
         return None
+
 # רשימה מעודכנת הממוקדת בסממנים שיווקיים ומסחריים
 AD_WORDS = [
     "לפרטים נוספים לחצו",
@@ -97,6 +98,7 @@ def clean_text(text):
     cleaned = re.sub(r'https?://[^\s]+', '', cleaned)
     # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
     return cleaned.strip()
+
 def main():
     if not RSS_URLS: return
     states = {}
@@ -115,18 +117,14 @@ def main():
         
         new_items = []
         for entry in feed.entries:
-            # שליפת הטקסט של ההודעה (תלוי במבנה ה-RSS שלך)
+            # שליפת הטקסט של ההודעה
             post_text = entry.get('summary', entry.get('title', ''))
 
-            # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה
+            # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה (ההזחה תוקנה כאן)
             if is_ad(post_text):
-            print("Ad detected, skipping message.")
-            continue
+                print("Ad detected, skipping message.")
+                continue
 
-            # 2. ניקוי הקישורים מהטקסט שנותר
-            clean_post_text = clean_text(post_text)
-
-             # מכאן הסקריפט ממשיך כרגיל, רק שעכשיו אתה משתמש ב-clean_post_text
             entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
             if entry_id == last_id: break
             new_items.append(entry)
@@ -157,6 +155,10 @@ def main():
                     text = raw_title.strip()
             else:
                 text = raw_title.strip()
+            
+            # 2. הפעלת ניקוי הקישורים על הטקסט הסופי שיוצג בצ'אט
+            text = clean_text(text)
+            
             link = getattr(item, 'link', '')
             media_url = ""
             filename = "attachment.jpg"
@@ -187,7 +189,7 @@ def main():
             clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
             clean_title = clean_title.strip("•").strip()
             
-            # בניית ההודעה ללא הקישור בסוף
+            # בניית ההודעה
             payload = {"text": f"*{clean_title}*\n\n{text}"}
             
             if media_url:
