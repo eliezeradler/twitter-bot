@@ -116,17 +116,17 @@ def main():
         new_items = []
         for entry in feed.entries:
             # שליפת הטקסט של ההודעה (תלוי במבנה ה-RSS שלך)
-        post_text = entry.get('summary', entry.get('title', ''))
+            post_text = entry.get('summary', entry.get('title', ''))
 
-        # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה
-        if is_ad(post_text):
+            # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה
+            if is_ad(post_text):
             print("Ad detected, skipping message.")
             continue
 
-        # 2. ניקוי הקישורים מהטקסט שנותר
-        clean_post_text = clean_text(post_text)
+            # 2. ניקוי הקישורים מהטקסט שנותר
+            clean_post_text = clean_text(post_text)
 
-        # מכאן הסקריפט ממשיך כרגיל, רק שעכשיו אתה משתמש ב-clean_post_text
+             # מכאן הסקריפט ממשיך כרגיל, רק שעכשיו אתה משתמש ב-clean_post_text
             entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
             if entry_id == last_id: break
             new_items.append(entry)
