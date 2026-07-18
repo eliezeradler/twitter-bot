@@ -1,3 +1,4 @@
+import re
 import os
 import json
 import feedparser
@@ -62,7 +63,40 @@ def upload_media_to_chat(token, media_url, filename):
     except Exception as e:
         print(f"Error uploading: {e}")
         return None
+# רשימה מעודכנת הממוקדת בסממנים שיווקיים ומסחריים
+AD_WORDS = [
+    "לפרטים נוספים לחצו",
+    "לרכישה",
+    "להזמנות",
+    "מכירת",
+    "לשליחת קורות חיים",
+    "לפרטים והרשמה",
+    "הלינק",
+    "השאירו פרטים",
+    "utm_source=",   # מזהה קישורי פרסומות קלאסי
+    "utm_campaign=", # מזהה קישורי פרסומות קלאסי
+    "ללא עלות וללא התחייבות"
+]
 
+def is_ad(text):
+    """בודק אם הטקסט מכיל סממנים מובהקים של פרסומת"""
+    if not text:
+        return False
+    for word in AD_WORDS:
+        if word in text:
+            return True
+    return False
+
+def clean_text(text):
+    """מנקה קישורים מהטקסט"""
+    if not text:
+        return ""
+    # הסרת קישורי טלגרם
+    cleaned = re.sub(r'(https?://)?t\.me/[^\s]+', '', text)
+    # הסרת קישורי אינטרנט רגילים (אופציונלי - אם תרצה להשאיר קישורים רגילים, מחק שורה זו)
+    cleaned = re.sub(r'https?://[^\s]+', '', cleaned)
+    # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
+    return cleaned.strip()
 def main():
     if not RSS_URLS: return
     states = {}
@@ -81,6 +115,18 @@ def main():
         
         new_items = []
         for entry in feed.entries:
+            # שליפת הטקסט של ההודעה (תלוי במבנה ה-RSS שלך)
+        post_text = entry.get('summary', entry.get('title', ''))
+
+        # 1. בדיקה אם זו פרסומת - אם כן, מדלגים להודעה הבאה
+        if is_ad(post_text):
+            print("Ad detected, skipping message.")
+            continue
+
+        # 2. ניקוי הקישורים מהטקסט שנותר
+        clean_post_text = clean_text(post_text)
+
+        # מכאן הסקריפט ממשיך כרגיל, רק שעכשיו אתה משתמש ב-clean_post_text
             entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
             if entry_id == last_id: break
             new_items.append(entry)
