@@ -41,3 +41,10 @@ jobs:
           git add last_ids.json
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update last_ids.json" && git push)
         continue-on-error: true
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update bot state"
+          git push
