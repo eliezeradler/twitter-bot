@@ -2,6 +2,7 @@ import re
 import os
 import time
 import json
+import difflib
 import feedparser
 from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
@@ -72,6 +73,7 @@ def upload_media_to_chat(token, media_url, filename):
     except Exception as e:
         print(f"Error uploading: {e}")
         return None
+
 # רשימה מעודכנת הממוקדת בסממנים שיווקיים ומסחריים
 AD_WORDS = [
     "לפרטים נוספים לחצו",
@@ -115,6 +117,15 @@ def clean_text(text):
     # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
     return cleaned.strip()
 
+def is_too_similar(new_title, seen_titles, threshold=0.6):
+    """בודק אם הכותרת החדשה דומה מאוד לכותרת שכבר קיימת ממקור אחר (מעל 60% דמיון)"""
+    if not new_title:
+        return False
+    for seen in seen_titles:
+        if difflib.SequenceMatcher(None, new_title, seen).ratio() >= threshold:
+            return True
+    return False
+
 def main():
     if not RSS_URLS: return
     states = {}
@@ -153,11 +164,12 @@ def main():
             if entry_id in last_ids:
                 break
 
-            # 2. מניעת כפילויות ממקורות שונים
+            # 2. מניעת כפילויות ממקורות שונים (כולל ניסוחים דומים)
             item_title = getattr(entry, 'title', '').strip()
-            if item_title and item_title in states["global_seen_titles"]:
-                print("Duplicate content from another source, skipping.")
-                continue
+            if item_title:
+                if item_title in states["global_seen_titles"] or is_too_similar(item_title, states["global_seen_titles"]):
+                    print("Similar content from another source, skipping.")
+                    continue
 
             new_items.append(entry)
             # עדכון הזיכרון בזמן אמת כדי למנוע כפילויות באותה ריצה
@@ -244,7 +256,7 @@ def main():
             
             res = requests.post(msg_url, headers=headers, json=payload)
             if res.status_code == 200:
-                print("Message sent successfully!")
+                print(f"Message '{clean_title}' sent successfully!")
                 
                 # עדכון הזיכרון
                 entry_id = getattr(item, 'id', getattr(item, 'link', ''))
