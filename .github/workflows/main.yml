@@ -47,4 +47,4 @@ jobs:
           git diff --quiet && git diff --staged --quiet || git commit -m "Update bot state"
           git pull --rebase origin main
           git push
-        continue-on-error: true
+        
