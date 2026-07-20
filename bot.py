@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import json
 import feedparser
 from bs4 import BeautifulSoup
@@ -34,15 +35,23 @@ def get_user_credentials():
 def upload_media_to_chat(token, media_url, filename):
     try:
         print(f"Downloading media: {media_url}")
-        res_media = requests.get(media_url, timeout=30)
+        res_media = requests.get(media_url, timeout=60)
         res_media.raise_for_status()
         
-        # זיהוי אוטומטי של סוג התוכן כדי שגוגל יציג תצוגה מקדימה של התמונות והסרטונים
-        content_type = "image/jpeg"
+        # זיהוי אוטומטי של סוג התוכן כדי שגוגל ידע איך להציג אותו
+        content_type = "application/octet-stream" # ברירת מחדל לקבצים כלליים
         if filename.endswith(".mp4"):
             content_type = "video/mp4"
+        elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
+            content_type = "image/jpeg"
         elif filename.endswith(".png"):
             content_type = "image/png"
+        elif filename.endswith(".webp"):
+            content_type = "image/webp"
+        elif filename.endswith(".mp3"):
+            content_type = "audio/mpeg"
+        elif filename.endswith(".pdf"):
+            content_type = "application/pdf"
         
         upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
         headers = {
@@ -51,7 +60,7 @@ def upload_media_to_chat(token, media_url, filename):
         }
         
         print(f"Uploading file as {content_type} to Google Chat servers...")
-        res = requests.post(upload_url, headers=headers, data=res_media.content)
+        res = requests.post(upload_url, headers=headers, data=res_media.content, timeout=60)
         
         if res.status_code != 200:
             print(f"Upload failed: {res.text}")
@@ -63,7 +72,6 @@ def upload_media_to_chat(token, media_url, filename):
     except Exception as e:
         print(f"Error uploading: {e}")
         return None
-
 # רשימה מעודכנת הממוקדת בסממנים שיווקיים ומסחריים
 AD_WORDS = [
     "לפרטים נוספים לחצו",
@@ -176,40 +184,56 @@ def main():
             text = clean_text(text)
             
             link = getattr(item, 'link', '')
-            media_url = ""
-            filename = "attachment.jpg"
+            attachment_tokens = []
             
+            # 1. חיפוש כל הקבצים המצורפים להודעה (עובר על כל הרשימה)
             if hasattr(item, 'enclosures') and item.enclosures:
-                enc = item.enclosures[0]
-                media_url = enc.get('href', enc.get('url', ''))
-                if 'video' in enc.get('type', '') or media_url.endswith('.mp4'):
-                    filename = "video.mp4"
+                for enc in item.enclosures:
+                    media_url = enc.get('href', enc.get('url', ''))
+                    if not media_url:
+                        continue
+                        
+                    enc_type = enc.get('type', '')
+                    filename = "file.dat"
                     
-            if not media_url and hasattr(item, 'media_content') and item.media_content:
-                media_url = item.media_content[0].get('url', '')
+                    # קביעת שם וסיומת הקובץ לפי הסוג
+                    if 'video' in enc_type or media_url.endswith('.mp4'):
+                        filename = "video.mp4"
+                    elif 'image' in enc_type or media_url.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                        filename = "image.jpg"
+                        if media_url.endswith('.png'): filename = "image.png"
+                    elif 'audio' in enc_type or media_url.endswith(('.mp3', '.ogg', '.wav')):
+                        filename = "audio.mp3"
+                    elif 'pdf' in enc_type or media_url.endswith('.pdf'):
+                        filename = "document.pdf"
+                        
+                    token_val = upload_media_to_chat(token, media_url, filename)
+                    if token_val:
+                        attachment_tokens.append(token_val)
 
-            if not media_url:
+            # 2. גיבוי: אם אין enclosures, נסרוק את התוכן וננסה לשלוף את כל התמונות והסרטונים
+            if not attachment_tokens:
                 html_content = getattr(item, 'content', [{'value': ''}])[0].get('value', '') if hasattr(item, 'content') else getattr(item, 'description', '')
                 if html_content:
                     soup = BeautifulSoup(html_content, 'html.parser')
-                    vid = soup.find('video')
-                    if vid and vid.get('src'):
-                        media_url = vid['src']
-                        filename = "video.mp4"
-                    else:
-                        img = soup.find('img')
-                        if img and img.get('src'): media_url = img['src']
+                    for vid in soup.find_all('video'):
+                        if vid.get('src'):
+                            token_val = upload_media_to_chat(token, vid['src'], "video.mp4")
+                            if token_val: attachment_tokens.append(token_val)
+                    for img in soup.find_all('img'):
+                        if img.get('src'):
+                            token_val = upload_media_to_chat(token, img['src'], "image.jpg")
+                            if token_val: attachment_tokens.append(token_val)
 
             clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
             clean_title = clean_title.strip("•").strip()
             
             payload = {"text": f"*{clean_title}*\n\n{text}"}
             
-            if media_url:
-                attachment_token = upload_media_to_chat(token, media_url, filename)
-                if attachment_token:
-                    print("Attaching file using upload token...")
-                    payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": attachment_token}}]
+            # צירוף של כל הקבצים שהעלינו לתוך ההודעה
+            if attachment_tokens:
+                print(f"Attaching {len(attachment_tokens)} files to message...")
+                payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
             
             msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -218,7 +242,7 @@ def main():
             if res.status_code == 200:
                 print("Message sent successfully!")
                 
-                # עדכון הזיכרון רק אם ההודעה נשלחה בהצלחה
+                # עדכון הזיכרון
                 entry_id = getattr(item, 'id', getattr(item, 'link', ''))
                 item_title = getattr(item, 'title', '').strip()
                 
@@ -227,7 +251,7 @@ def main():
                 if item_title and item_title not in states["global_seen_titles"]:
                     states["global_seen_titles"].append(item_title)
                     
-                # --- שמירת גיבוי מיידית לקובץ ---
+                # שמירת גיבוי מיידית לקובץ
                 states[rss_url] = last_ids[-50:]
                 states["global_seen_titles"] = states["global_seen_titles"][-100:]
                 try:
@@ -235,9 +259,11 @@ def main():
                         json.dump(states, f)
                 except Exception as e:
                     print(f"Error saving backup: {e}")
-                # --------------------------------
             else:
                 print(f"Error posting: {res.text}")
+                
+            # השהיית זמן של 3 שניות לפני מעבר להודעה הבאה כדי למנוע חסימה (429) מגוגל
+            time.sleep(3)
                 
         # שמירת 50 המזהים האחרונים לכל ערוץ
         states[rss_url] = last_ids[-50:]
