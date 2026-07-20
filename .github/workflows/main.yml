@@ -12,9 +12,6 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
     permissions:
       contents: write # חובה כדי לאפשר לבוט לעדכן את הקבצים במאגר
 
