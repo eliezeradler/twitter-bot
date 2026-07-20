@@ -226,6 +226,16 @@ def main():
                     last_ids.append(entry_id)
                 if item_title and item_title not in states["global_seen_titles"]:
                     states["global_seen_titles"].append(item_title)
+                    
+                # --- שמירת גיבוי מיידית לקובץ ---
+                states[rss_url] = last_ids[-50:]
+                states["global_seen_titles"] = states["global_seen_titles"][-100:]
+                try:
+                    with open(STATE_FILE, 'w') as f:
+                        json.dump(states, f)
+                except Exception as e:
+                    print(f"Error saving backup: {e}")
+                # --------------------------------
             else:
                 print(f"Error posting: {res.text}")
                 
