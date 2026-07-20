@@ -160,8 +160,10 @@ def main():
                 continue
 
             new_items.append(entry)
+            # עדכון הזיכרון בזמן אמת כדי למנוע כפילויות באותה ריצה
             last_ids.append(entry_id)
-            states["global_seen_titles"].append(item_title)
+            if item_title:
+                states["global_seen_titles"].append(item_title)
             
         if not last_ids and len(new_items) > 2: new_items = new_items[:2]
         if not new_items: continue
