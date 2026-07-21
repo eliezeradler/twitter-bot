@@ -38,7 +38,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-        run:
+        run: |
           git pull origin main
           python bot.py
 
@@ -51,4 +51,3 @@ jobs:
           git diff --quiet && git diff --staged --quiet || git commit -m "Update bot state"
           git pull --rebase origin main
           git push
-        
