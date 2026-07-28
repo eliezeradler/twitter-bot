@@ -126,6 +126,28 @@ def is_too_similar(new_title, seen_titles, threshold=0.6):
             return True
     return False
 
+def get_telegram_video_direct(post_url):
+    """
+    שולף את הוידאו ישירות מגרסת הרשת הפתוחה של טלגרם
+    רץ מתוך שרתי גיטהאב שיש להם גישה חופשית לכתובת
+    """
+    if not post_url or 't.me' not in post_url:
+        return None
+    try:
+        # מוסיף את פרמטר ההטמעה כדי לקבל את קובץ המדיה הישיר
+        embed_url = post_url if '?embed=1' in post_url else post_url + "?embed=1"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(embed_url, headers=headers, timeout=15)
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            video = soup.find('video')
+            if video and video.get('src'):
+                return video['src']
+    except Exception as e:
+        print(f"Failed to scrape video directly: {e}")
+    return None
+
 def main():
     if not RSS_URLS: return
     states = {}
@@ -240,6 +262,19 @@ def main():
                         if img.get('src'):
                             token_val = upload_media_to_chat(token, img['src'], "image.jpg")
                             if token_val: attachment_tokens.append(token_val)
+
+            # --- תוספת: טיפול בוידאו שנדחה על ידי ה-RSS ---
+            if "is too big@" in text or "is too big@" in raw_desc:
+                print("RSS skipped video. Scraping directly via GitHub Actions...")
+                direct_video_url = get_telegram_video_direct(link)
+                
+                if direct_video_url:
+                    token_val = upload_media_to_chat(token, direct_video_url, "video.mp4")
+                    if token_val: 
+                        attachment_tokens.append(token_val)
+                        # מחיקת טקסט השגיאה של ה-RSS מההודעה הסופית
+                        text = re.sub(r'[A-Za-z0-9_]+Video is too big@', '', text).strip()
+            # ----------------------------------------------------
 
             clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
             clean_title = clean_title.strip("•").strip()
