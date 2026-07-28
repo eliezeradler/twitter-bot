@@ -36,11 +36,12 @@ def get_user_credentials():
 def upload_media_to_chat(token, media_url, filename):
     try:
         print(f"Downloading media: {media_url}")
-        res_media = requests.get(media_url, timeout=60)
+        # הגדלת זמן ההמתנה ל-120 שניות עבור וידאו כבד
+        res_media = requests.get(media_url, timeout=120)
         res_media.raise_for_status()
         
         # זיהוי אוטומטי של סוג התוכן כדי שגוגל ידע איך להציג אותו
-        content_type = "application/octet-stream" # ברירת מחדל לקבצים כלליים
+        content_type = "application/octet-stream"
         if filename.endswith(".mp4"):
             content_type = "video/mp4"
         elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
@@ -61,7 +62,7 @@ def upload_media_to_chat(token, media_url, filename):
         }
         
         print(f"Uploading file as {content_type} to Google Chat servers...")
-        res = requests.post(upload_url, headers=headers, data=res_media.content, timeout=60)
+        res = requests.post(upload_url, headers=headers, data=res_media.content, timeout=120)
         
         if res.status_code != 200:
             print(f"Upload failed: {res.text}")
@@ -85,20 +86,18 @@ AD_WORDS = [
     "הלינק",
     "השאירו פרטים",
     "מספר המקומות מוגבל",
-    "השאירו פרטים",
     "אסור לכם לפספס",
     "לחצו כאן ",
     "לפרטים נוספים",
     "יפה תורה עם דרך ארץ",
     "לפרטים מלאים",
     "לרכישת כרטיסים",
-    "utm_source=",   # מזהה קישורי פרסומות קלאסי
-    "utm_campaign=", # מזהה קישורי פרסומות קלאסי
+    "utm_source=",
+    "utm_campaign=",
     "ללא עלות וללא התחייבות"
 ]
 
 def is_ad(text):
-    """בודק אם הטקסט מכיל סממנים מובהקים של פרסומת"""
     if not text:
         return False
     for word in AD_WORDS:
@@ -107,18 +106,13 @@ def is_ad(text):
     return False
 
 def clean_text(text):
-    """מנקה קישורים מהטקסט"""
     if not text:
         return ""
-    # הסרת קישורי טלגרם
     cleaned = re.sub(r'(https?://)?t\.me/[^\s]+', '', text)
-    # הסרת קישורי אינטרנט רגילים
     cleaned = re.sub(r'https?://[^\s]+', '', cleaned)
-    # ניקוי רווחים מיותרים שנוצרו אחרי המחיקה
     return cleaned.strip()
 
 def is_too_similar(new_title, seen_titles, threshold=0.6):
-    """בודק אם הכותרת החדשה דומה מאוד לכותרת שכבר קיימת ממקור אחר (מעל 60% דמיון)"""
     if not new_title:
         return False
     for seen in seen_titles:
@@ -134,7 +128,7 @@ def get_telegram_video_direct(post_url):
     if not post_url or 't.me' not in post_url:
         return None
     try:
-        # מוסיף את פרמטר ההטמעה כדי לקבל את קובץ המדיה הישיר
+        # חילוץ ישיר ממסגרת ההטמעה של טלגרם
         embed_url = post_url if '?embed=1' in post_url else post_url + "?embed=1"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(embed_url, headers=headers, timeout=15)
@@ -142,8 +136,13 @@ def get_telegram_video_direct(post_url):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             video = soup.find('video')
-            if video and video.get('src'):
-                return video['src']
+            if video:
+                # טלגרם מציבים לעיתים את הקישור ישירות ב-src ולעיתים בתגית source
+                if video.has_attr('src'):
+                    return video['src']
+                source = video.find('source')
+                if source and source.has_attr('src'):
+                    return source['src']
     except Exception as e:
         print(f"Failed to scrape video directly: {e}")
     return None
@@ -156,7 +155,6 @@ def main():
             try: states = json.load(f)
             except: pass
 
-    # הבטחת קיום רשימת כותרות גלובלית למניעת כפילויות ממקורות שונים
     if "global_seen_titles" not in states:
         states["global_seen_titles"] = []
 
@@ -167,7 +165,6 @@ def main():
         feed = feedparser.parse(rss_url)
         feed_title = getattr(feed.feed, 'title', 'מקור לא ידוע')
         
-        # הפיכת הזיכרון הישן (טקסט) לרשימה חכמה
         last_ids = states.get(rss_url, [])
         if isinstance(last_ids, str): 
             last_ids = [last_ids]
@@ -182,11 +179,9 @@ def main():
 
             entry_id = getattr(entry, 'id', getattr(entry, 'link', ''))
             
-            # 1. מניעת כפילויות מאותו מקור
             if entry_id in last_ids:
                 break
 
-            # 2. מניעת כפילויות ממקורות שונים (כולל ניסוחים דומים)
             item_title = getattr(entry, 'title', '').strip()
             if item_title:
                 if item_title in states["global_seen_titles"] or is_too_similar(item_title, states["global_seen_titles"]):
@@ -194,7 +189,6 @@ def main():
                     continue
 
             new_items.append(entry)
-            # עדכון הזיכרון בזמן אמת כדי למנוע כפילויות באותה ריצה
             last_ids.append(entry_id)
             if item_title:
                 states["global_seen_titles"].append(item_title)
@@ -220,21 +214,18 @@ def main():
                 text = raw_title.strip()
             
             text = clean_text(text)
-            
             link = getattr(item, 'link', '')
             attachment_tokens = []
             
-            # 1. חיפוש כל הקבצים המצורפים להודעה (עובר על כל הרשימה)
+            # שלב 1: חיפוש קבצים מצורפים רגילים
             if hasattr(item, 'enclosures') and item.enclosures:
                 for enc in item.enclosures:
                     media_url = enc.get('href', enc.get('url', ''))
-                    if not media_url:
-                        continue
+                    if not media_url: continue
                         
                     enc_type = enc.get('type', '')
                     filename = "file.dat"
                     
-                    # קביעת שם וסיומת הקובץ לפי הסוג
                     if 'video' in enc_type or media_url.endswith('.mp4'):
                         filename = "video.mp4"
                     elif 'image' in enc_type or media_url.endswith(('.jpg', '.jpeg', '.png', '.webp')):
@@ -249,7 +240,7 @@ def main():
                     if token_val:
                         attachment_tokens.append(token_val)
 
-            # 2. גיבוי: אם אין enclosures, נסרוק את התוכן וננסה לשלוף את כל התמונות והסרטונים
+            # שלב 2: גיבוי מסורתי לסריקת ה-HTML
             if not attachment_tokens:
                 html_content = getattr(item, 'content', [{'value': ''}])[0].get('value', '') if hasattr(item, 'content') else getattr(item, 'description', '')
                 if html_content:
@@ -263,25 +254,29 @@ def main():
                             token_val = upload_media_to_chat(token, img['src'], "image.jpg")
                             if token_val: attachment_tokens.append(token_val)
 
-            # --- תוספת: טיפול בוידאו שנדחה על ידי ה-RSS ---
-            if "is too big@" in text or "is too big@" in raw_desc:
-                print("RSS skipped video. Scraping directly via GitHub Actions...")
+            # שלב 3: טיפול בוידאו כבד מדי שנדחה על ידי ה-RSS
+            if "too big" in text.lower() or "too big" in raw_desc.lower():
+                print(f"RSS skipped video. Target link: {link}")
+                
+                # מנקים את השגיאה המכוערת מהטקסט תמיד, כדי שלא תופיע בצ'אט לעולם
+                text = re.sub(r'[a-zA-Z0-9_]*\s*video is too big[@©]?', '', text, flags=re.IGNORECASE).strip()
+                
                 direct_video_url = get_telegram_video_direct(link)
                 
                 if direct_video_url:
                     token_val = upload_media_to_chat(token, direct_video_url, "video.mp4")
                     if token_val: 
-                        attachment_tokens.append(token_val)
-                        # מחיקת טקסט השגיאה של ה-RSS מההודעה הסופית
-                        text = re.sub(r'[A-Za-z0-9_]+Video is too big@', '', text).strip()
-            # ----------------------------------------------------
+                        # החלפה מלאה: דורסים את התמונה הממוזערת ומכניסים רק את הוידאו
+                        attachment_tokens = [token_val]
+                        print("Successfully replaced thumbnail with full video!")
+                else:
+                    print("Could not scrape video. Keeping original attachments/thumbnail.")
 
             clean_title = feed_title.replace("Telegram Channel", "").replace("חדשות ללא צנזורה", "").replace("-", "").strip()
             clean_title = clean_title.strip("•").strip()
             
             payload = {"text": f"*{clean_title}*\n\n{text}"}
             
-            # צירוף של כל הקבצים שהעלינו לתוך ההודעה
             if attachment_tokens:
                 print(f"Attaching {len(attachment_tokens)} files to message...")
                 payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
@@ -293,7 +288,6 @@ def main():
             if res.status_code == 200:
                 print(f"Message '{clean_title}' sent successfully!")
                 
-                # עדכון הזיכרון
                 entry_id = getattr(item, 'id', getattr(item, 'link', ''))
                 item_title = getattr(item, 'title', '').strip()
                 
@@ -302,7 +296,6 @@ def main():
                 if item_title and item_title not in states["global_seen_titles"]:
                     states["global_seen_titles"].append(item_title)
                     
-                # שמירת גיבוי מיידית לקובץ
                 states[rss_url] = last_ids[-50:]
                 states["global_seen_titles"] = states["global_seen_titles"][-100:]
                 try:
@@ -313,13 +306,10 @@ def main():
             else:
                 print(f"Error posting: {res.text}")
                 
-            # השהיית זמן של 3 שניות לפני מעבר להודעה הבאה כדי למנוע חסימה (429) מגוגל
             time.sleep(3)
                 
-        # שמירת 50 המזהים האחרונים לכל ערוץ
         states[rss_url] = last_ids[-50:]
         
-    # שמירת 100 הכותרות האחרונות גלובלית
     states["global_seen_titles"] = states["global_seen_titles"][-100:]
         
     with open(STATE_FILE, 'w') as f:
