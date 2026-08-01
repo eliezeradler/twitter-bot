@@ -13,7 +13,7 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # חובה כדי לאפשר לבוט לעדכן את הקבצים במאגר
+      contents: write
 
     steps:
       - name: Checkout code
@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedparser beautifulsoup4 google-auth google-auth-oauthlib google-auth-httplib2
+          pip install requests feedparser beautifulsoup4 google-auth google-auth-oauthlib google-auth-httplib2 telethon
 
       - name: Run bot.py
         env:
@@ -38,6 +38,9 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          TELEGRAM_STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
         run: |
           git pull origin main
           python bot.py
