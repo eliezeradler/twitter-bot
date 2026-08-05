@@ -1,4 +1,4 @@
-name: RSS to Google Chat Bot
+name: Telegram to Google Chat Bot
 
 on:
   schedule:
@@ -29,12 +29,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests feedparser beautifulsoup4 google-auth google-auth-oauthlib google-auth-httplib2 telethon
+          pip install requests google-auth google-auth-oauthlib google-auth-httplib2 telethon
 
       - name: Run bot.py
         env:
           CHAT_SPACE: ${{ secrets.CHAT_SPACE }}
-          RSS_URL: ${{ secrets.RSS_URL }}
+          TELEGRAM_CHANNELS: ${{ secrets.TELEGRAM_CHANNELS }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
