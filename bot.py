@@ -19,6 +19,7 @@ REFRESH_TOKEN = os.environ.get('GOOGLE_REFRESH_TOKEN')
 API_ID = os.environ.get('API_ID')
 API_HASH = os.environ.get('API_HASH')
 SESSION_STRING = os.environ.get('TELEGRAM_STRING_SESSION')
+IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 
 # רשימת הערוצים בטלגרם למעקב
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
@@ -26,12 +27,13 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 
 STATE_FILE = 'last_ids.json'
 
+# רשימה מסונכרנת של מילות פרסומת
 AD_WORDS = [
     "לפרטים נוספים לחצו", "לרכישה", "להזמנות", "מכירת", "לשליחת קורות חיים",
     "לפרטים והרשמה", "הלינק", "השאירו פרטים", "מספר המקומות מוגבל",
     "אסור לכם לפספס", "לחצו כאן ", "לפרטים נוספים", "יפה תורה עם דרך ארץ",
-    "לפרטים מלאים", "לרכישת כרטיסים", "utm_source=", "utm_campaign=", "ללא עלות" ,"לפרטים והזמנות" ,"לחצו כעת" ,"אל תפספסו",
-    
+    "לפרטים מלאים", "לרכישת כרטיסים", "utm_source=", "utm_campaign=", "ללא עלות",
+    "לפרטים והזמנות", "לחצו כעת", "אל תפספסו"
 ]
 
 def is_ad(text):
@@ -47,12 +49,14 @@ def clean_text(text):
     # 1. הסרת קישורי טלגרם ווואטסאפ מכל סוג
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
-    # 2. הסרת שורות חתימה ודרכי הצטרפות
+    # 2. הסרת שורות חתימה ודרכי הצטרפות - רשימה מסונכרנת
     footer_markers = [
         "לשליחת חומרים", 
         "להצטרפות:", 
         "ערוץ וואטסאפ", 
         "גם בטלגרם",
+        "אוף דה רקורד",
+        "ללא צנזורה",
         "צאפ מגזין בטלגרם - חדשות ועדכונים סביב השעון:",
         "@ZiratNews",
         "@N12chat",
@@ -62,7 +66,7 @@ def clean_text(text):
         "לעדכוני הפרגוד בטלגרם",
         "כדי להגיב לכתבה לחצו כאן",
         "לכל העדכונים",
-        "דרך הקישור",
+        "דרך הקישור"
     ]
     
     lines = text.split('\n')
@@ -76,7 +80,6 @@ def clean_text(text):
     return '\n'.join(valid_lines).strip()
 
 def is_too_similar(new_text, seen_texts, threshold=0.70):
-    """ בודק דמיון של 70% ומעלה בהשוואה להודעות קודמות """
     if not new_text: return False
     check_text = new_text[:200]
     for seen in seen_texts:
@@ -151,13 +154,12 @@ async def main():
         print("No target channels configured.")
         return
 
-    # זיהוי האם זו ריצת אתחול
-    is_initial_run = not os.path.exists(STATE_FILE)
-    if is_initial_run:
-        print("🚀 זוהתה ריצת אתחול! הבוט יסרוק וישמור את ההיסטוריה מבלי לשלוח הודעות לצ'אט.")
+    is_global_initial_run = not os.path.exists(STATE_FILE) or IS_MANUAL_INIT
+    if is_global_initial_run:
+        print("🚀 זוהתה ריצת אתחול! הבוט יסרוק וישמור היסטוריה מבלי לשלוח הודעות לצ'אט.")
 
     states = {}
-    if not is_initial_run:
+    if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r') as f:
             try: states = json.load(f)
             except: pass
@@ -165,20 +167,31 @@ async def main():
     if "global_seen_texts" not in states:
         states["global_seen_texts"] = []
 
-    # במידה וזו ריצת אתחול, אין טעם להתחבר לגוגל כי לא נשלח כלום
-    token = get_user_credentials() if not is_initial_run else None
+    # נמשוך טוקן לגוגל רק אם אנחנו מתכוונים לשלוח הודעות
+    token = get_user_credentials() if not is_global_initial_run else None
 
     client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
     await client.connect()
 
     for channel in TARGET_CHANNELS:
         print(f"\n--- Checking channel: {channel} ---")
-        last_id = states.get(channel, 0)
-        highest_id_processed = last_id
-
         try:
-            # בקשת הודעות מהישנה לחדשה (רק מה שלא נקרא עדיין)
-            messages = await client.get_messages(channel, min_id=last_id, limit=20, reverse=True)
+            # משיכת פרטי הערוץ כדי לקבל את השם הרשמי שלו
+            entity = await client.get_entity(channel)
+            channel_title = entity.title
+            
+            last_id = states.get(channel, 0)
+            highest_id_processed = last_id
+            
+            # אם זה ערוץ חדש לגמרי, נפעיל עבורו מצב אתחול
+            is_channel_initial_run = is_global_initial_run or last_id == 0
+
+            if is_channel_initial_run:
+                # בעת אתחול - נמשוך את 20 ההודעות *האחרונות ביותר* כדי לקבוע קו התחלה
+                messages = await client.get_messages(entity, limit=20)
+            else:
+                # בעבודה רגילה - נמשוך מההודעה האחרונה שנקראה והלאה (מהישנה לחדשה)
+                messages = await client.get_messages(entity, min_id=last_id, limit=20, reverse=True)
             
             if not messages:
                 print("No new messages.")
@@ -190,19 +203,17 @@ async def main():
                 raw_text = message.text or ""
                 clean_msg = clean_text(raw_text)
 
-                # אם זו ריצת אתחול - פשוט שומרים את ה-ID ואת הטקסט למאגר (כדי למנוע כפילויות בעתיד) ומדלגים הלאה
-                if is_initial_run:
-                    highest_id_processed = message.id
+                if is_channel_initial_run:
+                    highest_id_processed = max(highest_id_processed, message.id)
                     if clean_msg and not is_ad(raw_text):
                         states["global_seen_texts"].append(clean_msg)
                     continue
 
                 if is_ad(raw_text):
-                    print("Ad detected, skipping message.")
+                    print("Ad detected, skipping.")
                     highest_id_processed = message.id
                     continue
                 
-                # מניעת כפילויות - סף דמיון של 70%
                 if clean_msg and is_too_similar(clean_msg, states["global_seen_texts"], threshold=0.70):
                     print("Similar content detected, skipping.")
                     highest_id_processed = message.id
@@ -224,8 +235,10 @@ async def main():
                     highest_id_processed = message.id
                     continue
 
-                final_text = clean_msg if clean_msg else "קובץ מצורף"
-                success = send_chat_message(token, final_text, attachment_tokens)
+                # עיצוב ההודעה הסופית - הוספת שם הערוץ מודגש
+                formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\nקובץ מצורף"
+                
+                success = send_chat_message(token, formatted_text, attachment_tokens)
                 
                 if success:
                     highest_id_processed = message.id
@@ -234,20 +247,20 @@ async def main():
 
                 time.sleep(1)
 
-        except Exception as e:
-            print(f"Error reading channel {channel}: {e}")
+            states[channel] = highest_id_processed
 
-        states[channel] = highest_id_processed
-        states["global_seen_texts"] = states["global_seen_texts"][-100:]
+        except Exception as e:
+            print(f"Error processing channel {channel}: {e}")
 
         # שומר את הנתונים לקובץ בסיום הסריקה של כל ערוץ
+        states["global_seen_texts"] = states["global_seen_texts"][-100:]
         with open(STATE_FILE, 'w') as f:
             json.dump(states, f)
 
     await client.disconnect()
     
-    if is_initial_run:
-        print("\n✅ ריצת האתחול הסתיימה בהצלחה! קובץ last_ids.json נוצר. בריצה הבאה הבוט יתחיל לשלוח הודעות חדשות.")
+    if is_global_initial_run:
+        print("\n✅ ריצת האתחול הסתיימה בהצלחה! קו התחלה נשמר בזיכרון.")
 
 if __name__ == "__main__":
     asyncio.run(main())
