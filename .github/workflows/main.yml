@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      init_run:
+        description: 'הרץ כריצת אתחול בלבד (יסרוק וישמור היסטוריה ללא העברה לצ''אט)'
+        required: false
+        type: boolean
+        default: false
   
 concurrency:
   group: bot-runs
@@ -41,6 +47,7 @@ jobs:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           TELEGRAM_STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
+          INIT_RUN: ${{ github.event.inputs.init_run }}
         run: |
           git pull origin main
           python bot.py
