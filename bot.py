@@ -101,6 +101,7 @@ def get_user_credentials():
     return creds.token
 
 def upload_media_to_chat(token, file_path, filename):
+    """ מעלה מדיה ומחזיר טוקן במקרה של הצלחה, או הודעת שגיאה מפורטת במקרה של כישלון """
     try:
         content_type = "application/octet-stream"
         if filename.endswith(".mp4"): content_type = "video/mp4"
@@ -117,6 +118,12 @@ def upload_media_to_chat(token, file_path, filename):
         }
 
         print(f"Uploading {filename} to Google Chat...")
+        
+        # בדיקת משקל הקובץ לפני העלאה (עוזר בזיהוי מוקדם של שגיאות)
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size_mb > 200:
+            return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB). גוגל חוסמת קבצים מעל ~200MB."
+
         with open(file_path, 'rb') as f:
             file_data = f.read()
             
@@ -124,14 +131,19 @@ def upload_media_to_chat(token, file_path, filename):
         
         if res.status_code != 200:
             print(f"Upload failed: {res.text}")
-            return None
+            error_msg = res.text
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                error_msg = "חסימת עומס זמנית מצד גוגל (Rate Limit)."
+            elif "Request Entity Too Large" in error_msg or "413" in error_msg:
+                error_msg = "הקובץ חורג ממגבלת המשקל המותרת על ידי גוגל."
+            return None, error_msg
             
         data = res.json()
-        return data.get('attachmentDataRef', {}).get('attachmentUploadToken')
+        return data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
         
     except Exception as e:
         print(f"Error uploading: {e}")
-        return None
+        return None, str(e)
 
 def send_chat_message(token, text, attachment_tokens):
     payload = {"text": text}
@@ -220,23 +232,33 @@ async def main():
                     continue
 
                 attachment_tokens = []
+                upload_errors = [] # רשימה לשמירת שגיאות העלאה
+                
                 if message.media:
                     print("Downloading media via Telethon...")
                     file_path = await client.download_media(message)
                     if file_path:
                         filename = os.path.basename(file_path)
-                        upload_token = upload_media_to_chat(token, file_path, filename)
+                        upload_token, upload_error = upload_media_to_chat(token, file_path, filename)
+                        
                         if upload_token:
                             attachment_tokens.append(upload_token)
+                        elif upload_error:
+                            upload_errors.append(upload_error) # שמירת השגיאה לדיווח
+                            
                         os.remove(file_path)
-                        time.sleep(1.5)
+                        time.sleep(2) # הגדלתי מעט את ההמתנה כדי למנוע חסימות מגוגל
 
-                if not clean_msg and not attachment_tokens:
+                if not clean_msg and not attachment_tokens and not upload_errors:
                     highest_id_processed = message.id
                     continue
 
                 # עיצוב ההודעה הסופית - הוספת שם הערוץ מודגש
-                formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\nקובץ מצורף"
+                formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
+                
+                # אם היו שגיאות בהעלאת הקובץ, משרשרים אזהרה בולטת בסוף ההודעה
+                if upload_errors:
+                    formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. סיבה: {upload_errors[0]})*"
                 
                 success = send_chat_message(token, formatted_text, attachment_tokens)
                 
@@ -245,7 +267,7 @@ async def main():
                     if clean_msg:
                         states["global_seen_texts"].append(clean_msg)
 
-                time.sleep(1)
+                time.sleep(1.5)
 
             states[channel] = highest_id_processed
 
