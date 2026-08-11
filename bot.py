@@ -28,7 +28,9 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 # --- תוספת: הגדרת שכפול למרחבים נוספים בגוגל צ'אט ---
 # המבנה: 'שם_הערוץ_בטלגרם': 'מזהה_המרחב_הנוסף_בגוגל'
 EXTRA_GOOGLE_CHAT_SPACES = {
-    'merkaz': 'spaces/AAQAxPM8YDI'
+    'merkaz': 'spaces/AAQAxPM8YDI',
+    'taagad_news': 'spaces/AAQAxPM8YDI'
+    
 }
 
 STATE_FILE = 'last_ids.json'
