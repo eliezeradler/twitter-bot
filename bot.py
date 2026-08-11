@@ -25,6 +25,12 @@ IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
+# --- תוספת: הגדרת שכפול למרחבים נוספים בגוגל צ'אט ---
+# המבנה: 'שם_הערוץ_בטלגרם': 'מזהה_המרחב_הנוסף_בגוגל'
+EXTRA_GOOGLE_CHAT_SPACES = {
+    'merkaz': 'spaces/AAQAxPM8YDI'
+}
+
 STATE_FILE = 'last_ids.json'
 
 # רשימה מסונכרנת של מילות פרסומת
@@ -49,24 +55,13 @@ def clean_text(text):
     # 1. הסרת קישורי טלגרם ווואטסאפ מכל סוג
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
-    # 2. הסרת שורות חתימה ודרכי הצטרפות - רשימה מסונכרנת
+    # 2. הסרת שורות חתימה ודרכי הצטרפות
     footer_markers = [
-        "לשליחת חומרים", 
-        "להצטרפות:", 
-        "ערוץ וואטסאפ", 
-        "גם בטלגרם",
-        "אוף דה רקורד",
-        "ללא צנזורה",
-        "צאפ מגזין בטלגרם - חדשות ועדכונים סביב השעון:",
-        "@ZiratNews",
-        "@N12chat",
-        "הכי חם ברשת - ’הערינג’",
-        "דיווחים ראשוניים בערוץ",
-        " רשת החדשות של בית שמש",
-        "לעדכוני הפרגוד בטלגרם",
-        "כדי להגיב לכתבה לחצו כאן",
-        "לכל העדכונים",
-        "דרך הקישור"
+        "לשליחת חומרים", "להצטרפות:", "ערוץ וואטסאפ", "גם בטלגרם", "אוף דה רקורד",
+        "ללא צנזורה", "צאפ מגזין בטלגרם - חדשות ועדכונים סביב השעון:", "@ZiratNews",
+        "@N12chat", "הכי חם ברשת - ’הערינג’", "דיווחים ראשוניים בערוץ",
+        " רשת החדשות של בית שמש", "לעדכוני הפרגוד בטלגרם", "כדי להגיב לכתבה לחצו כאן",
+        "לכל העדכונים", "דרך הקישור"
     ]
     
     lines = text.split('\n')
@@ -100,7 +95,8 @@ def get_user_credentials():
     creds.refresh(Request())
     return creds.token
 
-def upload_media_to_chat(token, file_path, filename):
+# הפונקציה עודכנה לקבל את המרחב כיעד, כדי לתמוך בשכפול
+def upload_media_to_chat(token, file_path, filename, target_space):
     """ מעלה מדיה ומחזיר טוקן במקרה של הצלחה, או הודעת שגיאה מפורטת במקרה של כישלון """
     try:
         content_type = "application/octet-stream"
@@ -111,18 +107,18 @@ def upload_media_to_chat(token, file_path, filename):
         elif filename.endswith(".mp3"): content_type = "audio/mpeg"
         elif filename.endswith(".pdf"): content_type = "application/pdf"
         
-        upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
+        upload_url = f"https://chat.googleapis.com/upload/v1/{target_space}/attachments:upload?filename={filename}&uploadType=media"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": content_type
         }
 
-        print(f"Uploading {filename} to Google Chat...")
+        print(f"Uploading {filename} to {target_space}...")
         
-        # בדיקת משקל הקובץ לפני העלאה (עוזר בזיהוי מוקדם של שגיאות)
+        # תוקן למגבלת 200 מגה-בייט הרשמית של גוגל
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         if file_size_mb > 200:
-            return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB). גוגל חוסמת קבצים מעל ~200MB."
+            return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB). גוגל חוסמת קבצים מעל 200MB."
 
         with open(file_path, 'rb') as f:
             file_data = f.read()
@@ -145,20 +141,21 @@ def upload_media_to_chat(token, file_path, filename):
         print(f"Error uploading: {e}")
         return None, str(e)
 
-def send_chat_message(token, text, attachment_tokens):
+# הפונקציה עודכנה לקבל את המרחב כיעד
+def send_chat_message(token, text, attachment_tokens, target_space):
     payload = {"text": text}
     if attachment_tokens:
         payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
         
-    msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
+    msg_url = f"https://chat.googleapis.com/v1/{target_space}/messages"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
     res = requests.post(msg_url, headers=headers, json=payload)
     if res.status_code == 200:
-        print("Message sent successfully!")
+        print(f"Message sent successfully to {target_space}!")
         return True
     else:
-        print(f"Error posting message: {res.text}")
+        print(f"Error posting message to {target_space}: {res.text}")
         return False
 
 async def main():
@@ -179,7 +176,6 @@ async def main():
     if "global_seen_texts" not in states:
         states["global_seen_texts"] = []
 
-    # נמשוך טוקן לגוגל רק אם אנחנו מתכוונים לשלוח הודעות
     token = get_user_credentials() if not is_global_initial_run else None
 
     client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
@@ -188,21 +184,17 @@ async def main():
     for channel in TARGET_CHANNELS:
         print(f"\n--- Checking channel: {channel} ---")
         try:
-            # משיכת פרטי הערוץ כדי לקבל את השם הרשמי שלו
             entity = await client.get_entity(channel)
             channel_title = entity.title
             
             last_id = states.get(channel, 0)
             highest_id_processed = last_id
             
-            # אם זה ערוץ חדש לגמרי, נפעיל עבורו מצב אתחול
             is_channel_initial_run = is_global_initial_run or last_id == 0
 
             if is_channel_initial_run:
-                # בעת אתחול - נמשוך את 20 ההודעות *האחרונות ביותר* כדי לקבוע קו התחלה
                 messages = await client.get_messages(entity, limit=20)
             else:
-                # בעבודה רגילה - נמשוך מההודעה האחרונה שנקראה והלאה (מהישנה לחדשה)
                 messages = await client.get_messages(entity, min_id=last_id, limit=20, reverse=True)
             
             if not messages:
@@ -231,38 +223,52 @@ async def main():
                     highest_id_processed = message.id
                     continue
 
-                attachment_tokens = []
-                upload_errors = [] # רשימה לשמירת שגיאות העלאה
-                
+                # בניית רשימת יעדים למשלוח (המרחב הראשי + כל מרחב נוסף שהוגדר לערוץ הזה)
+                target_spaces = [SPACE_NAME]
+                if channel in EXTRA_GOOGLE_CHAT_SPACES:
+                    extra_space = EXTRA_GOOGLE_CHAT_SPACES[channel]
+                    if not extra_space.startswith('spaces/'):
+                        extra_space = f"spaces/{extra_space}"
+                    target_spaces.append(extra_space)
+
+                file_path = None
                 if message.media:
                     print("Downloading media via Telethon...")
                     file_path = await client.download_media(message)
+
+                message_sent_successfully = False
+
+                # שליחה נפרדת לכל אחד ממרחבי גוגל צ'אט
+                for space in target_spaces:
+                    attachment_tokens = []
+                    upload_errors = [] 
+                    
                     if file_path:
                         filename = os.path.basename(file_path)
-                        upload_token, upload_error = upload_media_to_chat(token, file_path, filename)
+                        upload_token, upload_error = upload_media_to_chat(token, file_path, filename, space)
                         
                         if upload_token:
                             attachment_tokens.append(upload_token)
                         elif upload_error:
-                            upload_errors.append(upload_error) # שמירת השגיאה לדיווח
-                            
-                        os.remove(file_path)
-                        time.sleep(2) # הגדלתי מעט את ההמתנה כדי למנוע חסימות מגוגל
+                            upload_errors.append(upload_error) 
 
-                if not clean_msg and not attachment_tokens and not upload_errors:
-                    highest_id_processed = message.id
-                    continue
+                    if not clean_msg and not attachment_tokens and not upload_errors:
+                        continue
 
-                # עיצוב ההודעה הסופית - הוספת שם הערוץ מודגש
-                formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
-                
-                # אם היו שגיאות בהעלאת הקובץ, משרשרים אזהרה בולטת בסוף ההודעה
-                if upload_errors:
-                    formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. סיבה: {upload_errors[0]})*"
-                
-                success = send_chat_message(token, formatted_text, attachment_tokens)
-                
-                if success:
+                    formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
+                    if upload_errors:
+                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. סיבה: {upload_errors[0]})*"
+                    
+                    success = send_chat_message(token, formatted_text, attachment_tokens, space)
+                    if success:
+                        message_sent_successfully = True
+
+                # מחיקת הקובץ הזמני לאחר סיום השליחה לכל היעדים
+                if file_path:
+                    os.remove(file_path)
+                    time.sleep(2) 
+
+                if message_sent_successfully:
                     highest_id_processed = message.id
                     if clean_msg:
                         states["global_seen_texts"].append(clean_msg)
@@ -274,7 +280,6 @@ async def main():
         except Exception as e:
             print(f"Error processing channel {channel}: {e}")
 
-        # שומר את הנתונים לקובץ בסיום הסריקה של כל ערוץ
         states["global_seen_texts"] = states["global_seen_texts"][-100:]
         with open(STATE_FILE, 'w') as f:
             json.dump(states, f)
