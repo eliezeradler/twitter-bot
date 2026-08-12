@@ -25,12 +25,10 @@ IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
-# --- תוספת: הגדרת שכפול למרחבים נוספים בגוגל צ'אט ---
-# המבנה: 'שם_הערוץ_בטלגרם': 'מזהה_המרחב_הנוסף_בגוגל'
+# הגדרת שכפול למרחבים נוספים בגוגל צ'אט
 EXTRA_GOOGLE_CHAT_SPACES = {
     'merkaz': 'spaces/AAQAxPM8YDI',
     'taagad_news': 'spaces/AAQAxPM8YDI'
-    
 }
 
 STATE_FILE = 'last_ids.json'
@@ -54,10 +52,8 @@ def clean_text(text):
     """ מסיר קישורים ושורות חתימה/הצטרפות מהטקסט """
     if not text: return ""
     
-    # 1. הסרת קישורי טלגרם ווואטסאפ מכל סוג
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
-    # 2. הסרת שורות חתימה ודרכי הצטרפות
     footer_markers = [
         "לשליחת חומרים", "להצטרפות:", "ערוץ וואטסאפ", "גם בטלגרם", "אוף דה רקורד",
         "ללא צנזורה", "צאפ מגזין בטלגרם - חדשות ועדכונים סביב השעון:", "@ZiratNews",
@@ -97,9 +93,8 @@ def get_user_credentials():
     creds.refresh(Request())
     return creds.token
 
-# הפונקציה עודכנה לקבל את המרחב כיעד, כדי לתמוך בשכפול
 def upload_media_to_chat(token, file_path, filename, target_space):
-    """ מעלה מדיה ומחזיר טוקן במקרה של הצלחה, או הודעת שגיאה מפורטת במקרה של כישלון """
+    """ מעלה מדיה עם מנגנון השהיה מעריכית (Exponential Backoff) במקרה של 429 """
     try:
         content_type = "application/octet-stream"
         if filename.endswith(".mp4"): content_type = "video/mp4"
@@ -117,33 +112,55 @@ def upload_media_to_chat(token, file_path, filename, target_space):
 
         print(f"Uploading {filename} to {target_space}...")
         
-        # תוקן למגבלת 200 מגה-בייט הרשמית של גוגל
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         if file_size_mb > 200:
             return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB). גוגל חוסמת קבצים מעל 200MB."
 
         with open(file_path, 'rb') as f:
             file_data = f.read()
-            
-        res = requests.post(upload_url, headers=headers, data=file_data, timeout=120)
+
+        last_error_msg = "שגיאה לא ידועה"
+        upload_res = None
         
-        if res.status_code != 200:
-            print(f"Upload failed: {res.text}")
-            error_msg = res.text
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                error_msg = "חסימת עומס זמנית מצד גוגל (Rate Limit)."
-            elif "Request Entity Too Large" in error_msg or "413" in error_msg:
-                error_msg = "הקובץ חורג ממגבלת המשקל המותרת על ידי גוגל."
-            return None, error_msg
+        # מנגנון ניסיונות חוזרים (עד 5 ניסיונות)
+        for attempt in range(5):
+            try:
+                res = requests.post(upload_url, headers=headers, data=file_data, timeout=120)
+                
+                if res.status_code == 200:
+                    upload_res = res.json()
+                    break # ההעלאה הצליחה, יוצאים מהלולאה
+                else:
+                    error_msg = res.text
+                    last_error_msg = error_msg
+                    
+                    # בדיקה האם זו שגיאת עומס
+                    if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < 4:
+                        wait_time = 5 * (2 ** attempt) # 5, 10, 20, 40...
+                        print(f" > עומס כתיבה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                        time.sleep(wait_time)
+                    else:
+                        break # שגיאה אחרת (או שניסינו 5 פעמים), נוותר
+                        
+            except Exception as e:
+                last_error_msg = str(e)
+                if attempt < 4:
+                    wait_time = 5 * (2 ** attempt)
+                    print(f" > שגיאת רשת בהעלאה. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                    time.sleep(wait_time)
+                else:
+                    break
+
+        if upload_res:
+            return upload_res.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
+        else:
+            print(f"Upload completely failed after retries. Error: {last_error_msg}")
+            return None, last_error_msg
             
-        data = res.json()
-        return data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
-        
     except Exception as e:
-        print(f"Error uploading: {e}")
+        print(f"Critical error uploading: {e}")
         return None, str(e)
 
-# הפונקציה עודכנה לקבל את המרחב כיעד
 def send_chat_message(token, text, attachment_tokens, target_space):
     payload = {"text": text}
     if attachment_tokens:
@@ -225,7 +242,6 @@ async def main():
                     highest_id_processed = message.id
                     continue
 
-                # בניית רשימת יעדים למשלוח (המרחב הראשי + כל מרחב נוסף שהוגדר לערוץ הזה)
                 target_spaces = [SPACE_NAME]
                 if channel in EXTRA_GOOGLE_CHAT_SPACES:
                     extra_space = EXTRA_GOOGLE_CHAT_SPACES[channel]
@@ -240,7 +256,6 @@ async def main():
 
                 message_sent_successfully = False
 
-                # שליחה נפרדת לכל אחד ממרחבי גוגל צ'אט
                 for space in target_spaces:
                     attachment_tokens = []
                     upload_errors = [] 
@@ -258,14 +273,15 @@ async def main():
                         continue
 
                     formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
+                    
+                    # הוספת טקסט השגיאה המדויק להודעה במקרה של כישלון העלאה
                     if upload_errors:
-                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. סיבה: {upload_errors[0]})*"
+                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. שגיאה: {upload_errors[0]})*"
                     
                     success = send_chat_message(token, formatted_text, attachment_tokens, space)
                     if success:
                         message_sent_successfully = True
 
-                # מחיקת הקובץ הזמני לאחר סיום השליחה לכל היעדים
                 if file_path:
                     os.remove(file_path)
                     time.sleep(2) 
