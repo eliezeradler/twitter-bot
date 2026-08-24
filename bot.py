@@ -25,10 +25,35 @@ IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
-# הגדרת שכפול למרחבים נוספים בגוגל צ'אט
-EXTRA_GOOGLE_CHAT_SPACES = {
-    'merkaz': 'spaces/AAQAxPM8YDI',
-    'taagad_news': 'spaces/AAQAxPM8YDI'
+# מיפוי ניתוב למרחבים ייעודיים (פיצול עומס מוחלט ל-3 מרחבים)
+# ערוץ שמופיע כאן, יישלח *רק* למרחב המוגדר לו.
+# ערוץ שלא מופיע כאן, יישלח למרחב ברירת המחדל (מרחב ב' - חדשות ומבזקים).
+CHANNEL_ROUTING = {
+    # --- מרחב א': ציוצים ורשתות חברתיות ---
+    'The_Hot_Tweets': 'spaces/AAQAKjwZS1E',
+    'IsraelPoliticsTwitter': 'spaces/AAQAKjwZS1E',
+    'teweeterS': 'spaces/AAQAKjwZS1E',
+    'AmitSegal': 'spaces/AAQAKjwZS1E',
+    'danielamram3': 'spaces/AAQAKjwZS1E',
+    'amirmoyal': 'spaces/AAQAKjwZS1E',
+    'joking_world': 'spaces/AAQAKjwZS1E',
+    'pishpeshuk_Official': 'spaces/AAQAKjwZS1E',
+    'ViralIL': 'spaces/AAQAKjwZS1E',
+    'viralmedia12': 'spaces/AAQAKjwZS1E',
+
+    # --- מרחב ג': המגזר החרדי, מגזין וחדשות מקומיות ---
+    'haskupim': 'spaces/AAQAfrcg8es',
+    'Moshepargod': 'spaces/AAQAfrcg8es',
+    'tzap1': 'spaces/AAQAfrcg8es',
+    'yediyot_bnei_brak': 'spaces/AAQAfrcg8es',
+    'bneibrakim': 'spaces/AAQAfrcg8es',
+    'shemeshnews': 'spaces/AAQAfrcg8es',
+    'merkaz': 'spaces/AAQAfrcg8es',
+    'Yedioth_Bnei_Brak_Movies': 'spaces/AAQAfrcg8es',
+    'GbmMDm': 'spaces/AAQAfrcg8es'
+    
+    # שאר הערוצים (N12Chat, abualiexpress, taagad_news, ZiratNews, offtherecord1) 
+    # יישלחו אוטומטית למרחב המבזקים הראשי - SPACE_NAME
 }
 
 STATE_FILE = 'last_ids.json'
@@ -122,25 +147,24 @@ def upload_media_to_chat(token, file_path, filename, target_space):
         last_error_msg = "שגיאה לא ידועה"
         upload_res = None
         
-        # מנגנון ניסיונות חוזרים (עד 5 ניסיונות)
+        # מנגנון ניסיונות חוזרים (עד 5 ניסיונות) להעלאת הקובץ
         for attempt in range(5):
             try:
                 res = requests.post(upload_url, headers=headers, data=file_data, timeout=120)
                 
                 if res.status_code == 200:
                     upload_res = res.json()
-                    break # ההעלאה הצליחה, יוצאים מהלולאה
+                    break 
                 else:
                     error_msg = res.text
                     last_error_msg = error_msg
                     
-                    # בדיקה האם זו שגיאת עומס
                     if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < 4:
-                        wait_time = 5 * (2 ** attempt) # 5, 10, 20, 40...
-                        print(f" > עומס כתיבה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                        wait_time = 5 * (2 ** attempt) 
+                        print(f" > עומס העלאה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
                         time.sleep(wait_time)
                     else:
-                        break # שגיאה אחרת (או שניסינו 5 פעמים), נוותר
+                        break 
                         
             except Exception as e:
                 last_error_msg = str(e)
@@ -162,6 +186,7 @@ def upload_media_to_chat(token, file_path, filename, target_space):
         return None, str(e)
 
 def send_chat_message(token, text, attachment_tokens, target_space):
+    """ שולח הודעה עם מנגנון השהיה מעריכית במקרה של 429 """
     payload = {"text": text}
     if attachment_tokens:
         payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
@@ -169,13 +194,34 @@ def send_chat_message(token, text, attachment_tokens, target_space):
     msg_url = f"https://chat.googleapis.com/v1/{target_space}/messages"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    res = requests.post(msg_url, headers=headers, json=payload)
-    if res.status_code == 200:
-        print(f"Message sent successfully to {target_space}!")
-        return True
-    else:
-        print(f"Error posting message to {target_space}: {res.text}")
-        return False
+    last_error = ""
+    # מנגנון ניסיונות חוזרים (עד 5 ניסיונות) לשליחת ההודעה עצמה
+    for attempt in range(5):
+        try:
+            res = requests.post(msg_url, headers=headers, json=payload, timeout=60)
+            if res.status_code == 200:
+                print(f"Message sent successfully to {target_space}!")
+                return True
+            else:
+                last_error = res.text
+                if ("429" in last_error or "RESOURCE_EXHAUSTED" in last_error) and attempt < 4:
+                    wait_time = 5 * (2 ** attempt)
+                    print(f" > עומס שליחה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Error posting message to {target_space}: {last_error}")
+                    return False
+        except Exception as e:
+            last_error = str(e)
+            if attempt < 4:
+                wait_time = 5 * (2 ** attempt)
+                print(f" > שגיאת רשת בשליחה. ממתין {wait_time} שניות ומנסה שוב... ({e})")
+                time.sleep(wait_time)
+            else:
+                print(f"Critical error sending message: {e}")
+                return False
+                
+    return False
 
 async def main():
     if not TARGET_CHANNELS:
@@ -242,12 +288,15 @@ async def main():
                     highest_id_processed = message.id
                     continue
 
-                target_spaces = [SPACE_NAME]
-                if channel in EXTRA_GOOGLE_CHAT_SPACES:
-                    extra_space = EXTRA_GOOGLE_CHAT_SPACES[channel]
-                    if not extra_space.startswith('spaces/'):
-                        extra_space = f"spaces/{extra_space}"
-                    target_spaces.append(extra_space)
+                # ניתוב בלעדי: או למרחב המוגדר במילון, או למרחב ברירת המחדל
+                target_space = SPACE_NAME
+                if channel in CHANNEL_ROUTING:
+                    target_space = CHANNEL_ROUTING[channel]
+                    if not target_space.startswith('spaces/'):
+                        target_space = f"spaces/{target_space}"
+
+                # שליחה רק למרחב אחד שנקבע
+                target_spaces = [target_space]
 
                 file_path = None
                 if message.media:
@@ -274,7 +323,6 @@ async def main():
 
                     formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
                     
-                    # הוספת טקסט השגיאה המדויק להודעה במקרה של כישלון העלאה
                     if upload_errors:
                         formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. שגיאה: {upload_errors[0]})*"
                     
@@ -283,15 +331,18 @@ async def main():
                         message_sent_successfully = True
 
                 if file_path:
-                    os.remove(file_path)
-                    time.sleep(2) 
-
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
+                    
                 if message_sent_successfully:
                     highest_id_processed = message.id
                     if clean_msg:
                         states["global_seen_texts"].append(clean_msg)
 
-                time.sleep(1.5)
+                # השהיה בין הודעה להודעה באותו ערוץ
+                time.sleep(2.5)
 
             states[channel] = highest_id_processed
 
