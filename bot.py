@@ -26,8 +26,6 @@ TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
 # מיפוי ניתוב למרחבים ייעודיים (פיצול עומס מוחלט ל-3 מרחבים)
-# ערוץ שמופיע כאן, יישלח *רק* למרחב המוגדר לו.
-# ערוץ שלא מופיע כאן, יישלח למרחב ברירת המחדל (מרחב ב' - חדשות ומבזקים).
 CHANNEL_ROUTING = {
     # --- מרחב א': ציוצים ורשתות חברתיות ---
     'The_Hot_Tweets': 'spaces/AAQAKjwZS1E',
@@ -51,9 +49,6 @@ CHANNEL_ROUTING = {
     'merkaz': 'spaces/AAQAfrcg8es',
     'Yedioth_Bnei_Brak_Movies': 'spaces/AAQAfrcg8es',
     'GbmMDm': 'spaces/AAQAfrcg8es'
-    
-    # שאר הערוצים (N12Chat, abualiexpress, taagad_news, ZiratNews, offtherecord1) 
-    # יישלחו אוטומטית למרחב המבזקים הראשי - SPACE_NAME
 }
 
 STATE_FILE = 'last_ids.json'
@@ -119,7 +114,7 @@ def get_user_credentials():
     return creds.token
 
 def upload_media_to_chat(token, file_path, filename, target_space):
-    """ מעלה מדיה עם מנגנון השהיה מעריכית (Exponential Backoff) במקרה של 429 """
+    """ מעלה מדיה עם מנגנון השהיה קצר (2 ניסיונות) """
     try:
         content_type = "application/octet-stream"
         if filename.endswith(".mp4"): content_type = "video/mp4"
@@ -147,8 +142,8 @@ def upload_media_to_chat(token, file_path, filename, target_space):
         last_error_msg = "שגיאה לא ידועה"
         upload_res = None
         
-        # מנגנון ניסיונות חוזרים (עד 5 ניסיונות) להעלאת הקובץ
-        for attempt in range(5):
+        # מנגנון ניסיונות חוזרים (מקסימום 2)
+        for attempt in range(2):
             try:
                 res = requests.post(upload_url, headers=headers, data=file_data, timeout=120)
                 
@@ -159,18 +154,18 @@ def upload_media_to_chat(token, file_path, filename, target_space):
                     error_msg = res.text
                     last_error_msg = error_msg
                     
-                    if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < 4:
-                        wait_time = 5 * (2 ** attempt) 
-                        print(f" > עומס העלאה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                    if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < 1:
+                        wait_time = 3  # זמן המתנה קבוע של 3 שניות
+                        print(f" > עומס העלאה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
                         time.sleep(wait_time)
                     else:
                         break 
                         
             except Exception as e:
                 last_error_msg = str(e)
-                if attempt < 4:
-                    wait_time = 5 * (2 ** attempt)
-                    print(f" > שגיאת רשת בהעלאה. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                if attempt < 1:
+                    wait_time = 3
+                    print(f" > שגיאת רשת בהעלאה. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
                     time.sleep(wait_time)
                 else:
                     break
@@ -186,7 +181,7 @@ def upload_media_to_chat(token, file_path, filename, target_space):
         return None, str(e)
 
 def send_chat_message(token, text, attachment_tokens, target_space):
-    """ שולח הודעה עם מנגנון השהיה מעריכית במקרה של 429 """
+    """ שולח הודעה עם מנגנון השהיה קצר (2 ניסיונות) """
     payload = {"text": text}
     if attachment_tokens:
         payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
@@ -195,8 +190,7 @@ def send_chat_message(token, text, attachment_tokens, target_space):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
     last_error = ""
-    # מנגנון ניסיונות חוזרים (עד 5 ניסיונות) לשליחת ההודעה עצמה
-    for attempt in range(5):
+    for attempt in range(2):
         try:
             res = requests.post(msg_url, headers=headers, json=payload, timeout=60)
             if res.status_code == 200:
@@ -204,17 +198,17 @@ def send_chat_message(token, text, attachment_tokens, target_space):
                 return True
             else:
                 last_error = res.text
-                if ("429" in last_error or "RESOURCE_EXHAUSTED" in last_error) and attempt < 4:
-                    wait_time = 5 * (2 ** attempt)
-                    print(f" > עומס שליחה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/5)...")
+                if ("429" in last_error or "RESOURCE_EXHAUSTED" in last_error) and attempt < 1:
+                    wait_time = 3
+                    print(f" > עומס שליחה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
                     time.sleep(wait_time)
                 else:
                     print(f"Error posting message to {target_space}: {last_error}")
                     return False
         except Exception as e:
             last_error = str(e)
-            if attempt < 4:
-                wait_time = 5 * (2 ** attempt)
+            if attempt < 1:
+                wait_time = 3
                 print(f" > שגיאת רשת בשליחה. ממתין {wait_time} שניות ומנסה שוב... ({e})")
                 time.sleep(wait_time)
             else:
@@ -288,14 +282,12 @@ async def main():
                     highest_id_processed = message.id
                     continue
 
-                # ניתוב בלעדי: או למרחב המוגדר במילון, או למרחב ברירת המחדל
                 target_space = SPACE_NAME
                 if channel in CHANNEL_ROUTING:
                     target_space = CHANNEL_ROUTING[channel]
                     if not target_space.startswith('spaces/'):
                         target_space = f"spaces/{target_space}"
 
-                # שליחה רק למרחב אחד שנקבע
                 target_spaces = [target_space]
 
                 file_path = None
@@ -341,8 +333,8 @@ async def main():
                     if clean_msg:
                         states["global_seen_texts"].append(clean_msg)
 
-                # השהיה בין הודעה להודעה באותו ערוץ
-                time.sleep(2.5)
+                # השהיה מינימלית בין הודעה להודעה באותו ערוץ
+                time.sleep(1)
 
             states[channel] = highest_id_processed
 
