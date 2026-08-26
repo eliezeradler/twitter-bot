@@ -89,18 +89,17 @@ def get_user_credentials():
     return creds.token
 
 
-# הגדרת מגביל קצב צד-לקוח (Token Bucket)
-# מקסימום 1 בקשה בכל 1.2 שניות (שומר על מרווח ביטחון מהמגבלה של בקשה לשנייה)
-chat_api_limiter = AsyncLimiter(1, 1.2)
+# הגדרת מגביל קצב צד-לקוח - הואט ל-2.5 שניות עבור מרחב יחיד
+chat_api_limiter = AsyncLimiter(1, 2.5)
 
 class RateLimitExhaustedError(Exception):
     """ חריגה ייעודית שתקפיץ את מנגנון ה-tenacity לניסיון חוזר """
     pass
 
-# השהיה מעריכית עם Jitter (הזרקת רעש אקראי) - עד 3 ניסיונות בלבד לריצות קצרות
+# השהיה מעריכית מקוצרת לריצות של דקה (מקסימום 2 ניסיונות, עד 3 שניות השהיה)
 @retry(
-    stop=stop_after_attempt(3), 
-    wait=wait_exponential_jitter(initial=1, max=10, jitter=2),
+    stop=stop_after_attempt(2), 
+    wait=wait_exponential_jitter(initial=1, max=3, jitter=1),
     retry=retry_if_exception_type(RateLimitExhaustedError),
     reraise=True
 )
@@ -138,8 +137,8 @@ async def upload_media_to_chat(session, token, file_path, filename):
                 return None, f"Upload failed: {error_text}"
 
 @retry(
-    stop=stop_after_attempt(3), 
-    wait=wait_exponential_jitter(initial=1, max=10, jitter=2),
+    stop=stop_after_attempt(2), 
+    wait=wait_exponential_jitter(initial=1, max=3, jitter=1),
     retry=retry_if_exception_type(RateLimitExhaustedError),
     reraise=True
 )
@@ -198,7 +197,7 @@ async def main():
                 
                 is_channel_initial_run = is_global_initial_run or last_id == 0
 
-                # מכיוון שהסקריפט רץ כל דקה, 5 הודעות זו מכסה די והותר המונעת מכת עומס
+                # מגבלת סריקה נשארה על 5 הודעות
                 if is_channel_initial_run:
                     messages = await client.get_messages(entity, limit=10)
                 else:
