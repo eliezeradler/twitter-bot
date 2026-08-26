@@ -2,9 +2,3 @@ requests
 feedparser
 beautifulsoup4
 google-auth
-google-auth-oauthlib
-google-auth-httplib2
-telethon
-aiohttp
-aiolimiter
-tenacity
