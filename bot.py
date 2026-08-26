@@ -4,9 +4,7 @@ import json
 import asyncio
 import re
 import difflib
-import aiohttp
-from aiolimiter import AsyncLimiter
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+import requests
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from google.oauth2.credentials import Credentials
@@ -27,6 +25,32 @@ IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
+# מיפוי ניתוב למרחבים ייעודיים (פיצול עומס מוחלט ל-3 מרחבים)
+CHANNEL_ROUTING = {
+    # --- מרחב א': ציוצים ורשתות חברתיות ---
+    'The_Hot_Tweets': 'spaces/AAQAKjwZS1E',
+    'IsraelPoliticsTwitter': 'spaces/AAQAKjwZS1E',
+    'teweeterS': 'spaces/AAQAKjwZS1E',
+    'AmitSegal': 'spaces/AAQAKjwZS1E',
+    'danielamram3': 'spaces/AAQAKjwZS1E',
+    'amirmoyal': 'spaces/AAQAKjwZS1E',
+    'joking_world': 'spaces/AAQAKjwZS1E',
+    'pishpeshuk_Official': 'spaces/AAQAKjwZS1E',
+    'ViralIL': 'spaces/AAQAKjwZS1E',
+    'viralmedia12': 'spaces/AAQAKjwZS1E',
+
+    # --- מרחב ג': המגזר החרדי, מגזין וחדשות מקומיות ---
+    'haskupim': 'spaces/AAQAfrcg8es',
+    'Moshepargod': 'spaces/AAQAfrcg8es',
+    'tzap1': 'spaces/AAQAfrcg8es',
+    'yediyot_bnei_brak': 'spaces/AAQAfrcg8es',
+    'bneibrakim': 'spaces/AAQAfrcg8es',
+    'shemeshnews': 'spaces/AAQAfrcg8es',
+    'merkaz': 'spaces/AAQAfrcg8es',
+    'Yedioth_Bnei_Brak_Movies': 'spaces/AAQAfrcg8es',
+    'GbmMDm': 'spaces/AAQAfrcg8es'
+}
+
 STATE_FILE = 'last_ids.json'
 
 # רשימה מסונכרנת של מילות פרסומת
@@ -45,7 +69,9 @@ def is_ad(text):
     return False
 
 def clean_text(text):
+    """ מסיר קישורים ושורות חתימה/הצטרפות מהטקסט """
     if not text: return ""
+    
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
     footer_markers = [
@@ -76,7 +102,6 @@ def is_too_similar(new_text, seen_texts, threshold=0.70):
 
 def get_user_credentials():
     print("Authenticating to Google Chat via OAuth...")
-    import requests # בשימוש חד פעמי רק לאימות
     creds = Credentials(
         token=None,
         refresh_token=REFRESH_TOKEN,
@@ -88,78 +113,109 @@ def get_user_credentials():
     creds.refresh(Request())
     return creds.token
 
+def upload_media_to_chat(token, file_path, filename, target_space):
+    """ מעלה מדיה עם מנגנון השהיה קצר (2 ניסיונות) """
+    try:
+        content_type = "application/octet-stream"
+        if filename.endswith(".mp4"): content_type = "video/mp4"
+        elif filename.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
+        elif filename.endswith(".png"): content_type = "image/png"
+        elif filename.endswith(".webp"): content_type = "image/webp"
+        elif filename.endswith(".mp3"): content_type = "audio/mpeg"
+        elif filename.endswith(".pdf"): content_type = "application/pdf"
+        
+        upload_url = f"https://chat.googleapis.com/upload/v1/{target_space}/attachments:upload?filename={filename}&uploadType=media"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type
+        }
 
-# הגדרת מגביל קצב צד-לקוח - הואט ל-2.5 שניות עבור מרחב יחיד
-chat_api_limiter = AsyncLimiter(1, 2.5)
+        print(f"Uploading {filename} to {target_space}...")
+        
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size_mb > 200:
+            return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB). גוגל חוסמת קבצים מעל 200MB."
 
-class RateLimitExhaustedError(Exception):
-    """ חריגה ייעודית שתקפיץ את מנגנון ה-tenacity לניסיון חוזר """
-    pass
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
 
-# השהיה מעריכית מקוצרת לריצות של דקה (מקסימום 2 ניסיונות, עד 3 שניות השהיה)
-@retry(
-    stop=stop_after_attempt(2), 
-    wait=wait_exponential_jitter(initial=1, max=3, jitter=1),
-    retry=retry_if_exception_type(RateLimitExhaustedError),
-    reraise=True
-)
-async def upload_media_to_chat(session, token, file_path, filename):
-    content_type = "application/octet-stream"
-    if filename.endswith(".mp4"): content_type = "video/mp4"
-    elif filename.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
-    elif filename.endswith(".png"): content_type = "image/png"
-    elif filename.endswith(".webp"): content_type = "image/webp"
-    elif filename.endswith(".mp3"): content_type = "audio/mpeg"
-    elif filename.endswith(".pdf"): content_type = "application/pdf"
-    
-    upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": content_type}
+        last_error_msg = "שגיאה לא ידועה"
+        upload_res = None
+        
+        # מנגנון ניסיונות חוזרים (מקסימום 2)
+        for attempt in range(2):
+            try:
+                res = requests.post(upload_url, headers=headers, data=file_data, timeout=120)
+                
+                if res.status_code == 200:
+                    upload_res = res.json()
+                    break 
+                else:
+                    error_msg = res.text
+                    last_error_msg = error_msg
+                    
+                    if ("429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg) and attempt < 1:
+                        wait_time = 3  # זמן המתנה קבוע של 3 שניות
+                        print(f" > עומס העלאה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
+                        time.sleep(wait_time)
+                    else:
+                        break 
+                        
+            except Exception as e:
+                last_error_msg = str(e)
+                if attempt < 1:
+                    wait_time = 3
+                    print(f" > שגיאת רשת בהעלאה. ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
+                    time.sleep(wait_time)
+                else:
+                    break
 
-    print(f"Uploading {filename} to {SPACE_NAME}...")
-    
-    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-    if file_size_mb > 200:
-        return None, f"הקובץ כבד מדי ({file_size_mb:.1f}MB)."
+        if upload_res:
+            return upload_res.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
+        else:
+            print(f"Upload completely failed after retries. Error: {last_error_msg}")
+            return None, last_error_msg
+            
+    except Exception as e:
+        print(f"Critical error uploading: {e}")
+        return None, str(e)
 
-    with open(file_path, 'rb') as f:
-        file_data = f.read()
-
-    # מגביל הקצב דואג לאכיפה לפני ביצוע קריאת הרשת
-    async with chat_api_limiter:
-        async with session.post(upload_url, headers=headers, data=file_data, timeout=120) as res:
-            if res.status == 200:
-                data = await res.json()
-                return data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
-            else:
-                error_text = await res.text()
-                if res.status == 429 or "RESOURCE_EXHAUSTED" in error_text:
-                    raise RateLimitExhaustedError(f"429 Rate Limit: {error_text}")
-                return None, f"Upload failed: {error_text}"
-
-@retry(
-    stop=stop_after_attempt(2), 
-    wait=wait_exponential_jitter(initial=1, max=3, jitter=1),
-    retry=retry_if_exception_type(RateLimitExhaustedError),
-    reraise=True
-)
-async def send_chat_message(session, token, text, attachment_tokens):
+def send_chat_message(token, text, attachment_tokens, target_space):
+    """ שולח הודעה עם מנגנון השהיה קצר (2 ניסיונות) """
     payload = {"text": text}
     if attachment_tokens:
         payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
         
-    msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
+    msg_url = f"https://chat.googleapis.com/v1/{target_space}/messages"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    async with chat_api_limiter:
-        async with session.post(msg_url, headers=headers, json=payload, timeout=60) as res:
-            if res.status == 200:
-                print(f"Message sent successfully to {SPACE_NAME}!")
-                return True, None
+    last_error = ""
+    for attempt in range(2):
+        try:
+            res = requests.post(msg_url, headers=headers, json=payload, timeout=60)
+            if res.status_code == 200:
+                print(f"Message sent successfully to {target_space}!")
+                return True
             else:
-                error_text = await res.text()
-                if res.status == 429 or "RESOURCE_EXHAUSTED" in error_text:
-                    raise RateLimitExhaustedError(f"429 Rate Limit: {error_text}")
-                return False, error_text
+                last_error = res.text
+                if ("429" in last_error or "RESOURCE_EXHAUSTED" in last_error) and attempt < 1:
+                    wait_time = 3
+                    print(f" > עומס שליחה (429). ממתין {wait_time} שניות ומנסה שוב (ניסיון {attempt + 1}/2)...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Error posting message to {target_space}: {last_error}")
+                    return False
+        except Exception as e:
+            last_error = str(e)
+            if attempt < 1:
+                wait_time = 3
+                print(f" > שגיאת רשת בשליחה. ממתין {wait_time} שניות ומנסה שוב... ({e})")
+                time.sleep(wait_time)
+            else:
+                print(f"Critical error sending message: {e}")
+                return False
+                
+    return False
 
 async def main():
     if not TARGET_CHANNELS:
@@ -181,76 +237,80 @@ async def main():
 
     token = get_user_credentials() if not is_global_initial_run else None
 
-    # יצירת חיבור אסינכרוני מרכזי לקריאות הרשת מול גוגל
-    async with aiohttp.ClientSession() as aio_session:
-        client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
-        await client.connect()
+    client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
+    await client.connect()
 
-        for channel in TARGET_CHANNELS:
-            print(f"\n--- Checking channel: {channel} ---")
-            try:
-                entity = await client.get_entity(channel)
-                channel_title = entity.title
-                
-                last_id = states.get(channel, 0)
-                highest_id_processed = last_id
-                
-                is_channel_initial_run = is_global_initial_run or last_id == 0
+    for channel in TARGET_CHANNELS:
+        print(f"\n--- Checking channel: {channel} ---")
+        try:
+            entity = await client.get_entity(channel)
+            channel_title = entity.title
+            
+            last_id = states.get(channel, 0)
+            highest_id_processed = last_id
+            
+            is_channel_initial_run = is_global_initial_run or last_id == 0
 
-                # מגבלת סריקה נשארה על 5 הודעות
+            if is_channel_initial_run:
+                messages = await client.get_messages(entity, limit=20)
+            else:
+                messages = await client.get_messages(entity, min_id=last_id, limit=20, reverse=True)
+            
+            if not messages:
+                print("No new messages.")
+                continue
+
+            for message in messages:
+                print(f"Processing message ID: {message.id}")
+                
+                raw_text = message.text or ""
+                clean_msg = clean_text(raw_text)
+
                 if is_channel_initial_run:
-                    messages = await client.get_messages(entity, limit=10)
-                else:
-                    messages = await client.get_messages(entity, min_id=last_id, limit=5, reverse=True)
-                
-                if not messages:
+                    highest_id_processed = max(highest_id_processed, message.id)
+                    if clean_msg and not is_ad(raw_text):
+                        states["global_seen_texts"].append(clean_msg)
                     continue
 
-                for message in messages:
-                    print(f"Processing message ID: {message.id}")
-                    
-                    raw_text = message.text or ""
-                    clean_msg = clean_text(raw_text)
+                if is_ad(raw_text):
+                    print("Ad detected, skipping.")
+                    highest_id_processed = message.id
+                    continue
+                
+                if clean_msg and is_too_similar(clean_msg, states["global_seen_texts"], threshold=0.70):
+                    print("Similar content detected, skipping.")
+                    highest_id_processed = message.id
+                    continue
 
-                    if is_channel_initial_run:
-                        highest_id_processed = max(highest_id_processed, message.id)
-                        if clean_msg and not is_ad(raw_text):
-                            states["global_seen_texts"].append(clean_msg)
-                        continue
+                target_space = SPACE_NAME
+                if channel in CHANNEL_ROUTING:
+                    target_space = CHANNEL_ROUTING[channel]
+                    if not target_space.startswith('spaces/'):
+                        target_space = f"spaces/{target_space}"
 
-                    if is_ad(raw_text):
-                        highest_id_processed = message.id
-                        continue
-                    
-                    if clean_msg and is_too_similar(clean_msg, states["global_seen_texts"], threshold=0.70):
-                        highest_id_processed = message.id
-                        continue
+                target_spaces = [target_space]
 
-                    file_path = None
-                    if message.media:
-                        print("Downloading media via Telethon...")
-                        file_path = await client.download_media(message)
+                file_path = None
+                if message.media:
+                    print("Downloading media via Telethon...")
+                    file_path = await client.download_media(message)
 
+                message_sent_successfully = False
+
+                for space in target_spaces:
                     attachment_tokens = []
-                    upload_errors = []
+                    upload_errors = [] 
                     
                     if file_path:
                         filename = os.path.basename(file_path)
-                        try:
-                            upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
-                            if upload_token:
-                                attachment_tokens.append(upload_token)
-                            elif upload_error:
-                                upload_errors.append(upload_error)
-                        except RateLimitExhaustedError as e:
-                            upload_errors.append(f"חסימת עומס סופית 429 לאחר כל ניסיונות ה-Backoff: {e}")
-                        except Exception as e:
-                            upload_errors.append(f"שגיאת מערכת בלתי צפויה: {e}")
+                        upload_token, upload_error = upload_media_to_chat(token, file_path, filename, space)
+                        
+                        if upload_token:
+                            attachment_tokens.append(upload_token)
+                        elif upload_error:
+                            upload_errors.append(upload_error) 
 
                     if not clean_msg and not attachment_tokens and not upload_errors:
-                        if file_path:
-                            try: os.remove(file_path)
-                            except: pass
                         continue
 
                     formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
@@ -258,34 +318,37 @@ async def main():
                     if upload_errors:
                         formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. שגיאה: {upload_errors[0]})*"
                     
+                    success = send_chat_message(token, formatted_text, attachment_tokens, space)
+                    if success:
+                        message_sent_successfully = True
+
+                if file_path:
                     try:
-                        success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
-                        if success:
-                            highest_id_processed = message.id
-                            if clean_msg:
-                                states["global_seen_texts"].append(clean_msg)
-                    except RateLimitExhaustedError:
-                        print("Message failed due to persistent 429 errors.")
-                    except Exception as e:
-                        print(f"Message failed: {e}")
+                        os.remove(file_path)
+                    except:
+                        pass
+                    
+                if message_sent_successfully:
+                    highest_id_processed = message.id
+                    if clean_msg:
+                        states["global_seen_texts"].append(clean_msg)
 
-                    if file_path:
-                        try: os.remove(file_path)
-                        except: pass
+                # השהיה מינימלית בין הודעה להודעה באותו ערוץ
+                time.sleep(1)
 
-                states[channel] = highest_id_processed
+            states[channel] = highest_id_processed
 
-            except Exception as e:
-                print(f"Error processing channel {channel}: {e}")
+        except Exception as e:
+            print(f"Error processing channel {channel}: {e}")
 
-            states["global_seen_texts"] = states["global_seen_texts"][-100:]
-            with open(STATE_FILE, 'w') as f:
-                json.dump(states, f)
+        states["global_seen_texts"] = states["global_seen_texts"][-100:]
+        with open(STATE_FILE, 'w') as f:
+            json.dump(states, f)
 
-        await client.disconnect()
-        
-        if is_global_initial_run:
-            print("\n✅ ריצת האתחול הסתיימה בהצלחה! קו התחלה נשמר בזיכרון.")
+    await client.disconnect()
+    
+    if is_global_initial_run:
+        print("\n✅ ריצת האתחול הסתיימה בהצלחה! קו התחלה נשמר בזיכרון.")
 
 if __name__ == "__main__":
     asyncio.run(main())
