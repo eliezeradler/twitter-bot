@@ -26,16 +26,14 @@ API_HASH = os.environ.get('API_HASH')
 SESSION_STRING = os.environ.get('TELEGRAM_STRING_SESSION')
 IS_MANUAL_INIT = os.environ.get('INIT_RUN', 'false') == 'true'
 
-# רשימת הערוצים בטלגרם למעקב
 TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
 STATE_FILE = 'last_ids.json'
 
-# מגביל קצב צד-לקוח למרחב יחיד (הבסיס נשאר 2.2 שניות להגנה על המרחב)
-chat_api_limiter = AsyncLimiter(1, 2.2)
+# מגביל קצב קשיח: המתנה של 2.1 שניות בדיוק בין כל קריאה (מדיה -> הודעה -> מדיה הבאה)
+chat_api_limiter = AsyncLimiter(1, 2.1)
 
-# רשימה מסונכרנת של מילות פרסומת
 AD_WORDS = [
     "לפרטים נוספים לחצו", "לרכישה", "להזמנות", "מכירת", "לשליחת קורות חיים",
     "לפרטים והרשמה", "הלינק", "השאירו פרטים", "מספר המקומות מוגבל",
@@ -70,7 +68,6 @@ def is_too_similar(new_text, seen_texts, threshold=0.70):
     return any(difflib.SequenceMatcher(None, check_text, s[:200]).ratio() >= threshold for s in seen_texts)
 
 def get_user_credentials():
-    print("Authenticating to Google Chat via OAuth...")
     creds = Credentials(
         token=None,
         refresh_token=REFRESH_TOKEN,
@@ -83,13 +80,10 @@ def get_user_credentials():
     return creds.token
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    """
-    מבצע קריאת רשת עם מגביל קצב ונוסחת ההשהיה הרשמית של גוגל: min(2^n + random(0,1), 32)
-    מכיוון שאין מגבלת זמן ריצה, נאפשר עד 6 ניסיונות.
-    """
     max_attempts = 6
     
     for attempt in range(max_attempts):
+        # המערכת ממתינה כאן אוטומטית 2.1 שניות מהבקשה הקודמת
         async with chat_api_limiter:
             try:
                 async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
@@ -98,18 +92,18 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
                     
                     error_text = await res.text()
                     if res.status == 429 or "RESOURCE_EXHAUSTED" in error_text:
-                        wait_time = min((2 ** attempt) + random.uniform(0.0, 1.0), 32)
-                        print(f" > עומס 429. ממתין {wait_time:.2f} שניות לפי הנוסחה (ניסיון {attempt + 1}/{max_attempts})...")
+                        wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
+                        print(f" > עומס 429. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
                         await asyncio.sleep(wait_time)
                         continue
                     else:
                         return False, f"HTTP {res.status}: {error_text}"
             except Exception as e:
-                wait_time = min((2 ** attempt) + random.uniform(0.0, 1.0), 32)
+                wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
                 print(f" > שגיאת רשת ({e}). ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
                 await asyncio.sleep(wait_time)
                 
-    return False, f"בקשה נכשלה סופית לאחר {max_attempts} ניסיונות השהיה."
+    return False, f"בקשה נכשלה סופית לאחר {max_attempts} ניסיונות."
 
 async def upload_media_to_chat(session, token, file_path, filename):
     content_type = "application/octet-stream"
@@ -150,7 +144,6 @@ async def send_chat_message(session, token, text, attachment_tokens):
 
 async def main():
     if not TARGET_CHANNELS:
-        print("No target channels configured.")
         return
 
     is_global_initial_run = not os.path.exists(STATE_FILE) or IS_MANUAL_INIT
@@ -192,8 +185,6 @@ async def main():
                     continue
 
                 for message in messages:
-                    print(f"Processing message ID: {message.id}")
-                    
                     raw_text = message.text or ""
                     clean_msg = clean_text(raw_text)
 
@@ -225,9 +216,6 @@ async def main():
                         
                         if upload_token:
                             attachment_tokens.append(upload_token)
-                            # השהיה קשיחה של 1.5 שניות בין ההעלאה לשליחה, כפי שביקשת
-                            print(" > אסימון העלאה התקבל. ממתין 1.5 שניות לפני שיגור ההודעה למרחב...")
-                            await asyncio.sleep(1.5)
                         elif upload_error:
                             upload_errors.append(upload_error)
 
@@ -264,9 +252,6 @@ async def main():
                 json.dump(states, f)
 
         await client.disconnect()
-        
-        if is_global_initial_run:
-            print("\n✅ ריצת האתחול הסתיימה בהצלחה! קו התחלה נשמר בזיכרון.")
 
 if __name__ == "__main__":
     asyncio.run(main())
