@@ -2,7 +2,7 @@ name: Telegram to Google Chat Bot
 
 on:
   schedule:
-    - cron: '* * * * *'
+    - cron: '#* * * * *'
   workflow_dispatch:
     inputs:
       init_run:
