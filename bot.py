@@ -12,7 +12,6 @@ from telethon.sessions import StringSession
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-# הגדרות סביבה
 SPACE_NAME = os.environ.get('CHAT_SPACE', '').strip()
 if SPACE_NAME and not SPACE_NAME.startswith('spaces/'):
     SPACE_NAME = f"spaces/{SPACE_NAME}"
@@ -31,12 +30,7 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 
 STATE_FILE = 'last_ids.json'
 
-# מגביל קצב: 1 בקשת כתיבה כל 3 שניות per-space.
-# חשוב: media.upload ו-spaces.messages.create חולקים את אותה מכסת
-# per-space "writes per second" (1/שנייה) אצל Google Chat API, ואילו
-# העלאת מדיה יכולה לקחת זמן לא צפוי (עד 200MB, תלוי ברוחב פס) - לכן
-# המרווח גדול מ-1 שנייה ליצירת buffer בטיחות.
-chat_api_limiter = AsyncLimiter(1, 3.0)
+chat_api_limiter = AsyncLimiter(1, 2.1)
 
 AD_WORDS = [
     "לפרטים נוספים לחצו", "לרכישה", "להזמנות", "מכירת", "לשליחת קורות חיים",
@@ -53,7 +47,7 @@ def is_ad(text):
 def clean_text(text):
     if not text: return ""
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
-
+    
     footer_markers = [
         "לשליחת חומרים", "להצטרפות:", "ערוץ וואטסאפ", "גם בטלגרם", "אוף דה רקורד",
         "ללא צנזורה", "צאפ מגזין בטלגרם - חדשות ועדכונים סביב השעון:", "@ZiratNews",
@@ -61,7 +55,7 @@ def clean_text(text):
         " רשת החדשות של בית שמש", "לעדכוני הפרגוד בטלגרם", "כדי להגיב לכתבה לחצו כאן",
         "לכל העדכונים", "דרך הקישור"
     ]
-
+    
     lines = text.split('\n')
     valid_lines = [l for l in lines if not (any(m in l for m in footer_markers) and len(l) < 80)]
     return '\n'.join(valid_lines).strip()
@@ -83,53 +77,45 @@ def get_user_credentials():
     creds.refresh(Request())
     return creds.token
 
-
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    """
-    תיקון מרכזי: ה-await asyncio.sleep() של ה-backoff הוצא מחוץ ל-
-    'async with chat_api_limiter'. קודם הוא היה יושב בפנים, מה שגרם
-    לשני מנגנוני ה-throttling (ה-limiter וה-backoff) "להתערבב" זה בזה -
-    הבקשה הבאה יכלה להיכנס ל-limiter בזמן שהתהליך עדיין "ישן" ב-backoff,
-    כך שהמרווח האמיתי בין בקשות שהגיעו בפועל ל-Google לא היה עקבי.
-
-    עכשיו: ה-limiter עוטף רק את הבקשה עצמה. ה-sleep של ה-backoff קורה
-    אחרי היציאה מה-limiter, כך שהמרווח בין ניסיונות נשמר בצורה נקייה.
-    """
     max_attempts = 6
-
+    last_error = "שגיאה לא ידועה"
+    
     for attempt in range(max_attempts):
-        status = None
-        error_text = None
-        network_error = None
-
         async with chat_api_limiter:
-            try:
-                async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
-                    if res.status == 200:
-                        return True, await res.json()
-                    status = res.status
+            pass 
+            
+        status_code = 0
+        error_text = ""
+        is_success = False
+        res_data = None
+        
+        try:
+            async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
+                status_code = res.status
+                if status_code == 200:
+                    res_data = await res.json()
+                    is_success = True
+                else:
                     error_text = await res.text()
-            except Exception as e:
-                network_error = e
-
-        # --- מכאן והלאה אנחנו כבר מחוץ ל-limiter ---
-
-        if network_error is not None:
-            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
-            print(f" > שגיאת רשת ({network_error}). ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
-            await asyncio.sleep(wait_time)
-            continue
-
-        if status == 429 or (error_text and "RESOURCE_EXHAUSTED" in error_text):
+                    last_error = f"HTTP {status_code} - {error_text}"
+        except Exception as e:
+            error_text = str(e)
+            last_error = f"שגיאת רשת/מערכת: {error_text}"
+            
+        if is_success:
+            return True, res_data
+            
+        if status_code == 429 or "RESOURCE_EXHAUSTED" in error_text:
             wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
             print(f" > עומס 429. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
             await asyncio.sleep(wait_time)
-            continue
-
-        return False, f"HTTP {status}: {error_text}"
-
-    return False, f"בקשה נכשלה סופית לאחר {max_attempts} ניסיונות."
-
+        else:
+            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
+            print(f" > שגיאה {status_code}: {error_text}. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
+            await asyncio.sleep(wait_time)
+                
+    return False, f"נכשל סופית לאחר 6 ניסיונות. שגיאה אחרונה: {last_error}"
 
 async def upload_media_to_chat(session, token, file_path, filename):
     content_type = "application/octet-stream"
@@ -139,36 +125,31 @@ async def upload_media_to_chat(session, token, file_path, filename):
     elif filename.endswith(".webp"): content_type = "image/webp"
     elif filename.endswith(".mp3"): content_type = "audio/mpeg"
     elif filename.endswith(".pdf"): content_type = "application/pdf"
-
+    
     upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": content_type}
 
     print(f"Uploading {filename} to {SPACE_NAME}...")
-
-    if os.path.getsize(file_path) / (1024 * 1024) > 200:
-        return None, "הקובץ כבד מדי (מעל 200MB)."
-
+    
     with open(file_path, 'rb') as f:
         file_data = f.read()
 
     success, res_data = await execute_request_with_official_backoff(session, 'POST', upload_url, headers, data=file_data)
-
+    
     if success:
         return res_data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
     return None, str(res_data)
-
 
 async def send_chat_message(session, token, text, attachment_tokens):
     payload = {"text": text}
     if attachment_tokens:
         payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
-
+        
     msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
+    
     success, res_data = await execute_request_with_official_backoff(session, 'POST', msg_url, headers, json_payload=payload)
     return success, res_data
-
 
 async def main():
     if not TARGET_CHANNELS:
@@ -198,17 +179,17 @@ async def main():
             try:
                 entity = await client.get_entity(channel)
                 channel_title = entity.title
-
+                
                 last_id = states.get(channel, 0)
                 highest_id_processed = last_id
-
+                
                 is_channel_initial_run = is_global_initial_run or last_id == 0
 
                 if is_channel_initial_run:
                     messages = await client.get_messages(entity, limit=10)
                 else:
                     messages = await client.get_messages(entity, min_id=last_id, limit=5, reverse=True)
-
+                
                 if not messages:
                     continue
 
@@ -223,44 +204,62 @@ async def main():
                         continue
 
                     if is_ad(raw_text):
-                        highest_id_processed = message.id
+                        highest_id_processed = max(highest_id_processed, message.id)
                         continue
-
+                    
                     if clean_msg and is_too_similar(clean_msg, states["global_seen_texts"], threshold=0.70):
-                        highest_id_processed = message.id
+                        highest_id_processed = max(highest_id_processed, message.id)
                         continue
 
                     file_path = None
-                    if message.media:
-                        print("Downloading media via Telethon...")
-                        file_path = await client.download_media(message)
-
                     attachment_tokens = []
                     upload_errors = []
+
+                    if message.media:
+                        file_size_mb = 0
+                        if hasattr(message, 'file') and message.file and message.file.size:
+                            file_size_mb = message.file.size / (1024 * 1024)
+                            
+                        if file_size_mb > 200:
+                            print(f" > מדלג על הורדת קובץ: גודל {file_size_mb:.1f}MB חורג מהמותר.")
+                            upload_errors.append(f"קובץ המדיה חורג ממגבלת 200MB של גוגל (שוקל {file_size_mb:.1f}MB) ולכן לא צורף.")
+                        else:
+                            print("Downloading media via Telethon...")
+                            try:
+                                file_path = await asyncio.wait_for(client.download_media(message), timeout=180)
+                            except asyncio.TimeoutError:
+                                print(" > שגיאה: הורדת הקובץ מטלגרם נתקעה (Timeout).")
+                                upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מהמותר (3 דקות) ולכן לא צורף.")
+                            except Exception as e:
+                                print(f" > שגיאה בהורדת מדיה: {e}")
+                                upload_errors.append(f"שגיאה בהורדת הקובץ מטלגרם: {e}")
 
                     if file_path:
                         filename = os.path.basename(file_path)
                         upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
-
+                        
                         if upload_token:
                             attachment_tokens.append(upload_token)
+                            print(" > אסימון מדיה התקבל. ממתין 2.5 שניות לעיכול בגוגל לפני שליחת ההודעה...")
+                            await asyncio.sleep(2.5)
                         elif upload_error:
                             upload_errors.append(upload_error)
 
                     if not clean_msg and not attachment_tokens and not upload_errors:
+                        highest_id_processed = max(highest_id_processed, message.id)
                         if file_path:
                             try: os.remove(file_path)
                             except: pass
                         continue
 
                     formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
-
+                    
                     if upload_errors:
-                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. שגיאה: {upload_errors[0]})*"
-
+                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. פירוט: {upload_errors[0]})*"
+                    
                     success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
                     if success:
-                        highest_id_processed = message.id
+                        highest_id_processed = max(highest_id_processed, message.id)
                         if clean_msg:
                             states["global_seen_texts"].append(clean_msg)
                     else:
