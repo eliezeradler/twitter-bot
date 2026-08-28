@@ -31,7 +31,7 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 
 STATE_FILE = 'last_ids.json'
 
-# מגביל קצב קשיח: המתנה של 2.1 שניות בדיוק בין כל קריאה (מדיה -> הודעה -> מדיה הבאה)
+# מגביל הקצב. מונע הצפת בקשות רציפה, אבל לא נועל את המערכת.
 chat_api_limiter = AsyncLimiter(1, 2.1)
 
 AD_WORDS = [
@@ -83,25 +83,39 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
     max_attempts = 6
     
     for attempt in range(max_attempts):
-        # המערכת ממתינה כאן אוטומטית 2.1 שניות מהבקשה הקודמת
+        # 1. תיקון הלימיטר: מקבלים אישור כניסה ומיד משחררים כדי לא לחנוק את המערכת בזמן עיבוד
         async with chat_api_limiter:
-            try:
-                async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
-                    if res.status == 200:
-                        return True, await res.json()
-                    
+            pass 
+            
+        status_code = 0
+        error_text = ""
+        is_success = False
+        res_data = None
+        
+        try:
+            # 2. פעולת הרשת מתבצעת באופן עצמאי מחוץ ללימיטר
+            async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
+                status_code = res.status
+                if status_code == 200:
+                    res_data = await res.json()
+                    is_success = True
+                else:
                     error_text = await res.text()
-                    if res.status == 429 or "RESOURCE_EXHAUSTED" in error_text:
-                        wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
-                        print(f" > עומס 429. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        return False, f"HTTP {res.status}: {error_text}"
-            except Exception as e:
-                wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
-                print(f" > שגיאת רשת ({e}). ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
-                await asyncio.sleep(wait_time)
+        except Exception as e:
+            error_text = str(e)
+            
+        if is_success:
+            return True, res_data
+            
+        # 3. אם יש שגיאה, מנגנון ה-Backoff פועל בחופשיות מבלי לנעול בקשות אחרות
+        if status_code == 429 or "RESOURCE_EXHAUSTED" in error_text:
+            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
+            print(f" > עומס 429. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
+            await asyncio.sleep(wait_time)
+        else:
+            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
+            print(f" > שגיאה {status_code}: {error_text}. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
+            await asyncio.sleep(wait_time)
                 
     return False, f"בקשה נכשלה סופית לאחר {max_attempts} ניסיונות."
 
@@ -216,6 +230,9 @@ async def main():
                         
                         if upload_token:
                             attachment_tokens.append(upload_token)
+                            # 4. השהיה קשיחה מוחלטת לפיזור Latency בין ההעלאה לשליחת ההודעה המסכמת
+                            print(" > אסימון מדיה התקבל. ממתין 2.5 שניות לעיכול בגוגל לפני שליחת ההודעה...")
+                            await asyncio.sleep(2.5)
                         elif upload_error:
                             upload_errors.append(upload_error)
 
