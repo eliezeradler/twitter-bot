@@ -9,3 +9,4 @@ aiohttp
 aiolimiter
 tenacity
 cryptg
+google-api-python-client
