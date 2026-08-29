@@ -11,6 +11,8 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 SPACE_NAME = os.environ.get('CHAT_SPACE', '').strip()
 if SPACE_NAME and not SPACE_NAME.startswith('spaces/'):
@@ -72,10 +74,29 @@ def get_user_credentials():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET,
-        scopes=["https://www.googleapis.com/auth/chat.messages"]
+        scopes=[
+            "https://www.googleapis.com/auth/chat.messages",
+            "https://www.googleapis.com/auth/drive.file"
+        ]
     )
     creds.refresh(Request())
-    return creds.token
+    return creds
+
+def sync_upload_to_drive(creds, file_path, filename):
+    drive_service = build('drive', 'v3', credentials=creds)
+    file_metadata = {'name': filename}
+    media = MediaFileUpload(file_path, resumable=True)
+    
+    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+    file_id = file.get('id')
+    
+    permission = {'type': 'anyone', 'role': 'reader'}
+    drive_service.permissions().create(fileId=file_id, body=permission).execute()
+    
+    return file.get('webViewLink')
+
+async def upload_to_drive_async(creds, file_path, filename):
+    return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
     max_attempts = 6
@@ -168,7 +189,8 @@ async def main():
     if "global_seen_texts" not in states:
         states["global_seen_texts"] = []
 
-    token = get_user_credentials() if not is_global_initial_run else None
+    creds = get_user_credentials() if not is_global_initial_run else None
+    token = creds.token if creds else None
 
     async with aiohttp.ClientSession() as aio_session:
         client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
@@ -214,38 +236,50 @@ async def main():
                     file_path = None
                     attachment_tokens = []
                     upload_errors = []
+                    drive_link = None
 
                     if message.media:
                         file_size_mb = 0
                         if hasattr(message, 'file') and message.file and message.file.size:
                             file_size_mb = message.file.size / (1024 * 1024)
                             
-                        if file_size_mb > 200:
-                            print(f" > מדלג על הורדת קובץ: גודל {file_size_mb:.1f}MB חורג מהמותר.")
-                            upload_errors.append(f"קובץ המדיה חורג ממגבלת 200MB של גוגל (שוקל {file_size_mb:.1f}MB) ולכן לא צורף.")
-                        else:
-                            print("Downloading media via Telethon...")
-                            try:
-                                file_path = await asyncio.wait_for(client.download_media(message), timeout=180)
-                            except asyncio.TimeoutError:
-                                print(" > שגיאה: הורדת הקובץ מטלגרם נתקעה (Timeout).")
-                                upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מהמותר (3 דקות) ולכן לא צורף.")
-                            except Exception as e:
-                                print(f" > שגיאה בהורדת מדיה: {e}")
-                                upload_errors.append(f"שגיאה בהורדת הקובץ מטלגרם: {e}")
+                        print(f"Downloading media ({file_size_mb:.1f}MB)...")
+                        try:
+                            download_timeout = 600 if file_size_mb > 200 else 180
+                            file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
+                        except asyncio.TimeoutError:
+                            print(" > שגיאה: הורדת הקובץ מטלגרם נתקעה (Timeout).")
+                            upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מהמותר.")
+                        except Exception as e:
+                            print(f" > שגיאה בהורדת מדיה: {e}")
+                            upload_errors.append(f"שגיאה בהורדת הקובץ מטלגרם: {e}")
 
                     if file_path:
                         filename = os.path.basename(file_path)
-                        upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
                         
-                        if upload_token:
-                            attachment_tokens.append(upload_token)
-                            print(" > אסימון מדיה התקבל. ממתין 2.5 שניות לעיכול בגוגל לפני שליחת ההודעה...")
-                            await asyncio.sleep(2.5)
-                        elif upload_error:
-                            upload_errors.append(upload_error)
+                        if file_size_mb > 200:
+                            print(" > גודל חורג מ-200MB, מגבה ישירות לדרייב...")
+                            try:
+                                drive_link = await upload_to_drive_async(creds, file_path, filename)
+                            except Exception as e:
+                                upload_errors.append(f"העלאת גיבוי לדרייב נכשלה: {e}")
+                        else:
+                            upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
+                            if upload_token:
+                                attachment_tokens.append(upload_token)
+                                print(" > אסימון מדיה התקבל. ממתין 2.5 שניות לעיכול בגוגל...")
+                                await asyncio.sleep(2.5)
+                            elif upload_error:
+                                print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לדרייב...")
+                                try:
+                                    drive_link = await upload_to_drive_async(creds, file_path, filename)
+                                except Exception as e:
+                                    upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
-                    if not clean_msg and not attachment_tokens and not upload_errors:
+                        if drive_link:
+                            clean_msg += f"\n\n🔗 *קובץ מצורף (מגובה בדרייב):* {drive_link}"
+
+                    if not clean_msg and not attachment_tokens and not drive_link and not upload_errors:
                         highest_id_processed = max(highest_id_processed, message.id)
                         if file_path:
                             try: os.remove(file_path)
