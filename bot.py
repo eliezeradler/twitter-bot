@@ -6,7 +6,6 @@ import random
 import re
 import difflib
 import aiohttp
-from aiolimiter import AsyncLimiter
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from google.oauth2.credentials import Credentials
@@ -32,7 +31,20 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 
 STATE_FILE = 'last_ids.json'
 
-chat_api_limiter = AsyncLimiter(1, 2.1)
+# ==========================================
+# מנגנון מניעת עומסים משולב (קיצוב + Backoff)
+# ==========================================
+MIN_WRITE_INTERVAL = 1.2  # שניות בין כתיבה לכתיבה לפי ההגבלה של 1 בשנייה
+_last_write_ts = 0.0
+
+async def pace_write():
+    """מוודא שעבר מינימום הזמן הנדרש מאז בקשת הכתיבה/העלאה האחרונה"""
+    global _last_write_ts
+    now = time.time()
+    wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
+    if wait_needed > 0:
+        await asyncio.sleep(wait_needed)
+    _last_write_ts = time.time()
 
 AD_WORDS = [
     "לפרטים נוספים לחצו", "לרכישה", "להזמנות", "מכירת", "לשליחת קורות חיים",
@@ -48,6 +60,16 @@ def is_ad(text):
 
 def clean_text(text):
     if not text: return ""
+    
+    # 1. מחיקת שורות הכוללות את המילים וואטסאפ או טלגרם יחד עם קישור
+    text = re.sub(
+        r'(?m)^.*?(?:וואטס?אפ|טלגרם).*?(?:https?://\S+|t\.me/\S+).*$\n?',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 2. הסרת שאר הקישורים מהטקסט
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
     footer_markers = [
@@ -60,7 +82,12 @@ def clean_text(text):
     
     lines = text.split('\n')
     valid_lines = [l for l in lines if not (any(m in l for m in footer_markers) and len(l) < 80)]
-    return '\n'.join(valid_lines).strip()
+    text = '\n'.join(valid_lines).strip()
+
+    # 3. המרת הדגשה כפולה (**) לכוכבית בודדת (*) עבור גוגל צ'אט
+    text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
+    
+    return text
 
 def is_too_similar(new_text, seen_texts, threshold=0.70):
     if not new_text: return False
@@ -99,12 +126,13 @@ async def upload_to_drive_async(creds, file_path, filename):
     return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    max_attempts = 6
+    max_attempts = 7
+    base_delay = 3
+    max_wait = 60
     last_error = "שגיאה לא ידועה"
     
     for attempt in range(max_attempts):
-        async with chat_api_limiter:
-            pass 
+        await pace_write()
             
         status_code = 0
         error_text = ""
@@ -127,16 +155,16 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
         if is_success:
             return True, res_data
             
-        if status_code == 429 or "RESOURCE_EXHAUSTED" in error_text:
-            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
-            print(f" > עומס 429. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
-            await asyncio.sleep(wait_time)
+        if status_code in (429, 503) or "RESOURCE_EXHAUSTED" in error_text:
+            if attempt < max_attempts - 1:
+                jitter = random.uniform(0, 1)
+                wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
+                print(f" > עומס/זמינות בכתיבה. ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
+                await asyncio.sleep(wait_time)
         else:
-            wait_time = min((2 ** attempt) + random.uniform(0.1, 1.0), 32)
-            print(f" > שגיאה {status_code}: {error_text}. ממתין {wait_time:.2f} שניות (ניסיון {attempt + 1}/{max_attempts})...")
-            await asyncio.sleep(wait_time)
+            break
                 
-    return False, f"נכשל סופית לאחר 6 ניסיונות. שגיאה אחרונה: {last_error}"
+    return False, f"נכשל סופית לאחר {max_attempts} ניסיונות. שגיאה אחרונה: {last_error}"
 
 async def upload_media_to_chat(session, token, file_path, filename):
     content_type = "application/octet-stream"
@@ -286,10 +314,10 @@ async def main():
                             except: pass
                         continue
 
-                    formatted_text = f"*{channel_title}*\n\n{clean_msg}" if clean_msg else f"*{channel_title}*\n\n[ללא טקסט]"
+                    formatted_text = f"📢 *{channel_title}*\n\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\n\n_[הודעת מדיה ללא טקסט]_"
                     
                     if upload_errors:
-                        formatted_text += f"\n\n*(⚠️ הבוט לא הצליח להעלות קובץ מצורף להודעה זו. פירוט: {upload_errors[0]})*"
+                        formatted_text += f"\n\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
                     
                     success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
                     if success:
