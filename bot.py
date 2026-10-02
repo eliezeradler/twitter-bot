@@ -126,7 +126,7 @@ async def upload_to_drive_async(creds, file_path, filename):
     return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    max_attempts = 7
+    max_attempts = 1  # שינוי לניסיון אחד בלבד
     base_delay = 3
     max_wait = 60
     last_error = "שגיאה לא ידועה"
@@ -325,7 +325,23 @@ async def main():
                         if clean_msg:
                             states["global_seen_texts"].append(clean_msg)
                     else:
-                        print(f"Message failed: {send_error}")
+                        print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לדרייב...")
+                        # העלאת ההודעה כקובץ טקסט לדרייב במקרה של כשל
+                        temp_txt_filename = f"Message_{channel_title}_{message.id}.txt"
+                        try:
+                            with open(temp_txt_filename, 'w', encoding='utf-8') as tf:
+                                tf.write(formatted_text)
+                            text_drive_link = await upload_to_drive_async(creds, temp_txt_filename, temp_txt_filename)
+                            print(f" > הודעת הטקסט הועלתה לדרייב בהצלחה: {text_drive_link}")
+                            highest_id_processed = max(highest_id_processed, message.id)
+                            if clean_msg:
+                                states["global_seen_texts"].append(clean_msg)
+                        except Exception as e:
+                            print(f" > שגיאה בהעלאת הודעת הטקסט לדרייב: {e}")
+                        finally:
+                            if os.path.exists(temp_txt_filename):
+                                try: os.remove(temp_txt_filename)
+                                except: pass
 
                     if file_path:
                         try: os.remove(file_path)
