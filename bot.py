@@ -30,15 +30,15 @@ TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
 STATE_FILE = 'last_ids.json'
+MAX_RUNTIME_SECONDS = 210  # מקסימום 3.5 דקות ריצה
 
 # ==========================================
 # מנגנון מניעת עומסים משולב (קיצוב + Backoff)
 # ==========================================
-MIN_WRITE_INTERVAL = 1.2  # שניות בין כתיבה לכתיבה לפי ההגבלה של 1 בשנייה
+MIN_WRITE_INTERVAL = 1.2
 _last_write_ts = 0.0
 
 async def pace_write():
-    """מוודא שעבר מינימום הזמן הנדרש מאז בקשת הכתיבה/העלאה האחרונה"""
     global _last_write_ts
     now = time.time()
     wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
@@ -60,16 +60,7 @@ def is_ad(text):
 
 def clean_text(text):
     if not text: return ""
-    
-    # 1. מחיקת שורות הכוללות את המילים וואטסאפ או טלגרם יחד עם קישור
-    text = re.sub(
-        r'(?m)^.*?(?:וואטס?אפ|טלגרם).*?(?:https?://\S+|t\.me/\S+).*$\n?',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # 2. הסרת שאר הקישורים מהטקסט
+    text = re.sub(r'(?m)^.*?(?:וואטס?אפ|טלגרם).*?(?:https?://\S+|t\.me/\S+).*$\n?', '', text, flags=re.IGNORECASE)
     text = re.sub(r'(https?://)?(t\.me|telegram\.me|chat\.whatsapp\.com|wa\.me)[^\s]*', '', text)
     
     footer_markers = [
@@ -79,14 +70,10 @@ def clean_text(text):
         " רשת החדשות של בית שמש", "לעדכוני הפרגוד בטלגרם", "כדי להגיב לכתבה לחצו כאן",
         "לכל העדכונים", "דרך הקישור"
     ]
-    
     lines = text.split('\n')
     valid_lines = [l for l in lines if not (any(m in l for m in footer_markers) and len(l) < 80)]
     text = '\n'.join(valid_lines).strip()
-
-    # 3. המרת הדגשה כפולה (**) לכוכבית בודדת (*) עבור גוגל צ'אט
     text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
-    
     return text
 
 def is_too_similar(new_text, seen_texts, threshold=0.70):
@@ -113,58 +100,41 @@ def sync_upload_to_drive(creds, file_path, filename):
     drive_service = build('drive', 'v3', credentials=creds)
     file_metadata = {'name': filename}
     media = MediaFileUpload(file_path, resumable=True)
-    
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     file_id = file.get('id')
-    
     permission = {'type': 'anyone', 'role': 'reader'}
     drive_service.permissions().create(fileId=file_id, body=permission).execute()
-    
     return file.get('webViewLink')
 
 async def upload_to_drive_async(creds, file_path, filename):
     return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    max_attempts = 1  # שינוי לניסיון אחד בלבד
-    base_delay = 3
-    max_wait = 60
+    max_attempts = 1  
     last_error = "שגיאה לא ידועה"
     
-    for attempt in range(max_attempts):
-        await pace_write()
-            
-        status_code = 0
-        error_text = ""
-        is_success = False
-        res_data = None
+    await pace_write()
+    status_code = 0
+    error_text = ""
+    is_success = False
+    res_data = None
+    
+    try:
+        async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=60) as res:
+            status_code = res.status
+            if status_code == 200:
+                res_data = await res.json()
+                is_success = True
+            else:
+                error_text = await res.text()
+                last_error = f"HTTP {status_code} - {error_text}"
+    except Exception as e:
+        last_error = f"שגיאת רשת/מערכת: {str(e)}"
         
-        try:
-            async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=120) as res:
-                status_code = res.status
-                if status_code == 200:
-                    res_data = await res.json()
-                    is_success = True
-                else:
-                    error_text = await res.text()
-                    last_error = f"HTTP {status_code} - {error_text}"
-        except Exception as e:
-            error_text = str(e)
-            last_error = f"שגיאת רשת/מערכת: {error_text}"
+    if is_success:
+        return True, res_data
             
-        if is_success:
-            return True, res_data
-            
-        if status_code in (429, 503) or "RESOURCE_EXHAUSTED" in error_text:
-            if attempt < max_attempts - 1:
-                jitter = random.uniform(0, 1)
-                wait_time = min(max_wait, base_delay * (2 ** attempt)) + jitter
-                print(f" > עומס/זמינות בכתיבה. ממתין {wait_time:.2f} שניות ומנסה שוב (ניסיון {attempt + 1}/{max_attempts})...")
-                await asyncio.sleep(wait_time)
-        else:
-            break
-                
-    return False, f"נכשל סופית לאחר {max_attempts} ניסיונות. שגיאה אחרונה: {last_error}"
+    return False, f"נכשל סופית. שגיאה: {last_error}"
 
 async def upload_media_to_chat(session, token, file_path, filename):
     content_type = "application/octet-stream"
@@ -179,12 +149,10 @@ async def upload_media_to_chat(session, token, file_path, filename):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": content_type}
 
     print(f"Uploading {filename} to {SPACE_NAME}...")
-    
     with open(file_path, 'rb') as f:
         file_data = f.read()
 
     success, res_data = await execute_request_with_official_backoff(session, 'POST', upload_url, headers, data=file_data)
-    
     if success:
         return res_data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
     return None, str(res_data)
@@ -201,6 +169,8 @@ async def send_chat_message(session, token, text, attachment_tokens):
     return success, res_data
 
 async def main():
+    start_time = time.time()  # תחילת מדידת הזמן לריצה
+    
     if not TARGET_CHANNELS:
         return
 
@@ -225,6 +195,11 @@ async def main():
         await client.connect()
 
         for channel in TARGET_CHANNELS:
+            # בדיקה האם הגענו למגבלת הזמן
+            if time.time() - start_time > MAX_RUNTIME_SECONDS:
+                print("⏳ הגענו למגבלת הזמן (3.5 דקות). שומר מצב ויוצא כדי למנוע קריסה...")
+                break
+
             print(f"\n--- Checking channel: {channel} ---")
             try:
                 entity = await client.get_entity(channel)
@@ -232,18 +207,23 @@ async def main():
                 
                 last_id = states.get(channel, 0)
                 highest_id_processed = last_id
-                
                 is_channel_initial_run = is_global_initial_run or last_id == 0
 
                 if is_channel_initial_run:
                     messages = await client.get_messages(entity, limit=10)
                 else:
+                    # הוגבל ל-5 הודעות בלבד כדי לרוץ מהר
                     messages = await client.get_messages(entity, min_id=last_id, limit=5, reverse=True)
                 
                 if not messages:
                     continue
 
                 for message in messages:
+                    # בדיקת זמן נוספת ברמת ההודעה (שלא יתקע באמצע סריקת ערוץ עמוס)
+                    if time.time() - start_time > MAX_RUNTIME_SECONDS:
+                        print("⏳ זמן הריצה נגמר באמצע הערוץ, מפסיק...")
+                        break
+
                     raw_text = message.text or ""
                     clean_msg = clean_text(raw_text)
 
@@ -273,10 +253,11 @@ async def main():
                             
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
-                            download_timeout = 600 if file_size_mb > 200 else 180
+                            # קוצץ זמן ההמתנה כדי לא להיתקע על וידאו כבד!
+                            download_timeout = 60 if file_size_mb > 50 else 30
                             file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
                         except asyncio.TimeoutError:
-                            print(" > שגיאה: הורדת הקובץ מטלגרם נתקעה (Timeout).")
+                            print(" > שגיאה: הורדת הקובץ מטלגרם לקחה יותר מדי זמן ונקטעה.")
                             upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מהמותר.")
                         except Exception as e:
                             print(f" > שגיאה בהורדת מדיה: {e}")
@@ -295,8 +276,7 @@ async def main():
                             upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
                             if upload_token:
                                 attachment_tokens.append(upload_token)
-                                print(" > אסימון מדיה התקבל. ממתין 2.5 שניות לעיכול בגוגל...")
-                                await asyncio.sleep(2.5)
+                                print(" > אסימון מדיה התקבל.")
                             elif upload_error:
                                 print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לדרייב...")
                                 try:
@@ -315,7 +295,6 @@ async def main():
                         continue
 
                     formatted_text = f"📢 *{channel_title}*\n\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\n\n_[הודעת מדיה ללא טקסט]_"
-                    
                     if upload_errors:
                         formatted_text += f"\n\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
                     
@@ -326,7 +305,6 @@ async def main():
                             states["global_seen_texts"].append(clean_msg)
                     else:
                         print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לדרייב...")
-                        # העלאת ההודעה כקובץ טקסט לדרייב במקרה של כשל
                         temp_txt_filename = f"Message_{channel_title}_{message.id}.txt"
                         try:
                             with open(temp_txt_filename, 'w', encoding='utf-8') as tf:
@@ -352,6 +330,7 @@ async def main():
             except Exception as e:
                 print(f"Error processing channel {channel}: {e}")
 
+            # עדכון שמירת הקובץ מיד בסוף כל ערוץ - כדי שלא נאבד התקדמות!
             states["global_seen_texts"] = states["global_seen_texts"][-100:]
             with open(STATE_FILE, 'w') as f:
                 json.dump(states, f)
