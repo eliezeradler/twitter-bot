@@ -1,7 +1,6 @@
 import os
 import time
 import json
-יחכקניחנגדלח
 import asyncio
 import random
 import re
@@ -32,6 +31,12 @@ TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.str
 
 STATE_FILE = 'last_ids.json'
 MAX_RUNTIME_SECONDS = 210  # מקסימום 3.5 דקות ריצה
+
+# ==========================================
+# מזהי תיקיות בגוגל דרייב
+# ==========================================
+DRIVE_FOLDER_BACKUP = "15NzvBcWNwF5d8lv9DHlMldHW5RJOGTlr"
+DRIVE_FOLDER_LARGE = "1AwO8vkFtvbNbagaTCZhHpKLl4yHebggz"
 
 # ==========================================
 # מנגנון מניעת עומסים משולב (קיצוב + Backoff)
@@ -97,9 +102,13 @@ def get_user_credentials():
     creds.refresh(Request())
     return creds
 
-def sync_upload_to_drive(creds, file_path, filename):
+def sync_upload_to_drive(creds, file_path, filename, folder_id=None):
     drive_service = build('drive', 'v3', credentials=creds)
     file_metadata = {'name': filename}
+    
+    if folder_id:
+        file_metadata['parents'] = [folder_id]
+        
     media = MediaFileUpload(file_path, resumable=True)
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
     file_id = file.get('id')
@@ -107,8 +116,8 @@ def sync_upload_to_drive(creds, file_path, filename):
     drive_service.permissions().create(fileId=file_id, body=permission).execute()
     return file.get('webViewLink')
 
-async def upload_to_drive_async(creds, file_path, filename):
-    return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename)
+async def upload_to_drive_async(creds, file_path, filename, folder_id=None):
+    return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename, folder_id)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
     max_attempts = 1  
@@ -170,7 +179,7 @@ async def send_chat_message(session, token, text, attachment_tokens):
     return success, res_data
 
 async def main():
-    start_time = time.time()  # תחילת מדידת הזמן לריצה
+    start_time = time.time()  
     
     if not TARGET_CHANNELS:
         return
@@ -196,7 +205,6 @@ async def main():
         await client.connect()
 
         for channel in TARGET_CHANNELS:
-            # בדיקה האם הגענו למגבלת הזמן
             if time.time() - start_time > MAX_RUNTIME_SECONDS:
                 print("⏳ הגענו למגבלת הזמן (3.5 דקות). שומר מצב ויוצא כדי למנוע קריסה...")
                 break
@@ -213,14 +221,12 @@ async def main():
                 if is_channel_initial_run:
                     messages = await client.get_messages(entity, limit=10)
                 else:
-                    # הוגבל ל-5 הודעות בלבד כדי לרוץ מהר
                     messages = await client.get_messages(entity, min_id=last_id, limit=5, reverse=True)
                 
                 if not messages:
                     continue
 
                 for message in messages:
-                    # בדיקת זמן נוספת ברמת ההודעה (שלא יתקע באמצע סריקת ערוץ עמוס)
                     if time.time() - start_time > MAX_RUNTIME_SECONDS:
                         print("⏳ זמן הריצה נגמר באמצע הערוץ, מפסיק...")
                         break
@@ -254,7 +260,6 @@ async def main():
                             
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
-                            # קוצץ זמן ההמתנה כדי לא להיתקע על וידאו כבד!
                             download_timeout = 60 if file_size_mb > 50 else 30
                             file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
                         except asyncio.TimeoutError:
@@ -268,20 +273,20 @@ async def main():
                         filename = os.path.basename(file_path)
                         
                         if file_size_mb > 200:
-                            print(" > גודל חורג מ-200MB, מגבה ישירות לדרייב...")
+                            print(" > גודל חורג מ-200MB, מגבה לתיקיית 'קבצים גדולים' בדרייב...")
                             try:
-                                drive_link = await upload_to_drive_async(creds, file_path, filename)
+                                drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_LARGE)
                             except Exception as e:
-                                upload_errors.append(f"העלאת גיבוי לדרייב נכשלה: {e}")
+                                upload_errors.append(f"העלאת קובץ גדול לדרייב נכשלה: {e}")
                         else:
                             upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
                             if upload_token:
                                 attachment_tokens.append(upload_token)
                                 print(" > אסימון מדיה התקבל.")
                             elif upload_error:
-                                print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לדרייב...")
+                                print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לתיקיית 'גיבוי' בדרייב...")
                                 try:
-                                    drive_link = await upload_to_drive_async(creds, file_path, filename)
+                                    drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_BACKUP)
                                 except Exception as e:
                                     upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
@@ -305,14 +310,13 @@ async def main():
                         if clean_msg:
                             states["global_seen_texts"].append(clean_msg)
                     else:
-                        print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לדרייב...")
+                        print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לתיקיית 'גיבוי' בדרייב...")
                         temp_txt_filename = f"Message_{channel_title}_{message.id}.txt"
                         try:
                             with open(temp_txt_filename, 'w', encoding='utf-8') as tf:
                                 tf.write(formatted_text)
-                            text_drive_link = await upload_to_drive_async(creds, temp_txt_filename, temp_txt_filename)
+                            text_drive_link = await upload_to_drive_async(creds, temp_txt_filename, temp_txt_filename, folder_id=DRIVE_FOLDER_BACKUP)
                             print(f" > הודעת הטקסט הועלתה לדרייב בהצלחה: {text_drive_link}")
-                            highest_id_processed = max(highest_id_processed, message.id)
                             if clean_msg:
                                 states["global_seen_texts"].append(clean_msg)
                         except Exception as e:
@@ -321,6 +325,8 @@ async def main():
                             if os.path.exists(temp_txt_filename):
                                 try: os.remove(temp_txt_filename)
                                 except: pass
+                            
+                            highest_id_processed = max(highest_id_processed, message.id)
 
                     if file_path:
                         try: os.remove(file_path)
@@ -331,7 +337,6 @@ async def main():
             except Exception as e:
                 print(f"Error processing channel {channel}: {e}")
 
-            # עדכון שמירת הקובץ מיד בסוף כל ערוץ - כדי שלא נאבד התקדמות!
             states["global_seen_texts"] = states["global_seen_texts"][-100:]
             with open(STATE_FILE, 'w') as f:
                 json.dump(states, f)
