@@ -30,7 +30,6 @@ TARGET_CHANNELS_ENV = os.environ.get('TELEGRAM_CHANNELS', '')
 TARGET_CHANNELS = [ch.strip() for ch in TARGET_CHANNELS_ENV.split(',') if ch.strip()]
 
 STATE_FILE = 'last_ids.json'
-MAX_RUNTIME_SECONDS = 210  # מקסימום 3.5 דקות ריצה
 
 # ==========================================
 # מזהי תיקיות בגוגל דרייב
@@ -179,8 +178,6 @@ async def send_chat_message(session, token, text, attachment_tokens):
     return success, res_data
 
 async def main():
-    start_time = time.time()  
-    
     if not TARGET_CHANNELS:
         return
 
@@ -205,10 +202,6 @@ async def main():
         await client.connect()
 
         for channel in TARGET_CHANNELS:
-            if time.time() - start_time > MAX_RUNTIME_SECONDS:
-                print("⏳ הגענו למגבלת הזמן (3.5 דקות). שומר מצב ויוצא כדי למנוע קריסה...")
-                break
-
             print(f"\n--- Checking channel: {channel} ---")
             try:
                 entity = await client.get_entity(channel)
@@ -227,10 +220,6 @@ async def main():
                     continue
 
                 for message in messages:
-                    if time.time() - start_time > MAX_RUNTIME_SECONDS:
-                        print("⏳ זמן הריצה נגמר באמצע הערוץ, מפסיק...")
-                        break
-
                     raw_text = message.text or ""
                     clean_msg = clean_text(raw_text)
 
@@ -260,11 +249,12 @@ async def main():
                             
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
-                            download_timeout = 60 if file_size_mb > 50 else 30
+                            # פסק זמן אחיד של 15 דקות לכלל ההורדות מטלגרם
+                            download_timeout = 900
                             file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
                         except asyncio.TimeoutError:
                             print(" > שגיאה: הורדת הקובץ מטלגרם לקחה יותר מדי זמן ונקטעה.")
-                            upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מהמותר.")
+                            upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מ-15 דקות.")
                         except Exception as e:
                             print(f" > שגיאה בהורדת מדיה: {e}")
                             upload_errors.append(f"שגיאה בהורדת הקובץ מטלגרם: {e}")
