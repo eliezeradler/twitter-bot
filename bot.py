@@ -245,7 +245,7 @@ async def main():
                     if is_ad(raw_text):
                         highest_id_processed = max(highest_id_processed, message.id)
                         continue
-    
+                    
                     if clean_msg and is_too_similar(clean_msg, states["global_seen_texts"], threshold=0.70):
                         highest_id_processed = max(highest_id_processed, message.id)
                         continue
@@ -307,7 +307,7 @@ async def main():
                     formatted_text = f"📢 *{channel_title}*\n\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\n\n_[הודעת מדיה ללא טקסט]_"
                     if upload_errors:
                         formatted_text += f"\n\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
-    
+                    
                     success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
                     if success:
                         highest_id_processed = max(highest_id_processed, message.id)
@@ -349,4 +349,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
