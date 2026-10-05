@@ -1,3 +1,4 @@
+
 import os
 import time
 import json
@@ -295,7 +296,7 @@ async def main():
                                     upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
                         if drive_link:
-                            clean_msg += f"\\n\\n🔗 *קובץ מצורף (מגובה בדרייב):* {drive_link}"
+                            clean_msg += f"\n\n📹 *לצפייה בסרטון / קובץ בדרייב:*\n{drive_link}"
                         elif attachment_tokens:
                             # מרווח יזום של שניה אחת + מילי-שניות רנדומליות בין העלאת המדיה לשליחת ההודעה
                             await asyncio.sleep(1.0 + random.uniform(0.1, 0.3))
@@ -307,9 +308,9 @@ async def main():
                             except: pass
                         continue
 
-                    formatted_text = f"📢 *{channel_title}*\\n\\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\\n\\n_[הודעת מדיה ללא טקסט]_"
+                    formatted_text = f"📢 *{channel_title}*\n\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\n\n_[הודעת מדיה ללא טקסט]_"
                     if upload_errors:
-                        formatted_text += f"\\n\\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
+                        formatted_text += f"\n\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
                     
                     success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
                     if success:
