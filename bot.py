@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -39,7 +38,7 @@ DRIVE_FOLDER_BACKUP = "15NzvBcWNwF5d8lv9DHlMldHW5RJOGTlr"
 DRIVE_FOLDER_LARGE = "1AwO8vkFtvbNbagaTCZhHpKLl4yHebggz"
 
 # ==========================================
-# מנגנון מניעת עומסים מתוקן (קיצוב בסיום הפעולה)
+# מנגנון מניעת עומסים משולב (קיצוב + Backoff)
 # ==========================================
 MIN_WRITE_INTERVAL = 1.2
 _last_write_ts = 0.0
@@ -50,9 +49,6 @@ async def pace_write():
     wait_needed = MIN_WRITE_INTERVAL - (now - _last_write_ts)
     if wait_needed > 0:
         await asyncio.sleep(wait_needed)
-
-def mark_write_done():
-    global _last_write_ts
     _last_write_ts = time.time()
 
 AD_WORDS = [
@@ -122,36 +118,7 @@ def sync_upload_to_drive(creds, file_path, filename, folder_id=None):
 async def upload_to_drive_async(creds, file_path, filename, folder_id=None):
     return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename, folder_id)
 
-def sync_upload_media_to_chat(creds, space_name, file_path, filename):
-    content_type = "application/octet-stream"
-    if filename.endswith(".mp4"): content_type = "video/mp4"
-    elif filename.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
-    elif filename.endswith(".png"): content_type = "image/png"
-    elif filename.endswith(".webp"): content_type = "image/webp"
-    elif filename.endswith(".mp3"): content_type = "audio/mpeg"
-    elif filename.endswith(".pdf"): content_type = "application/pdf"
-
-    chat_service = build('chat', 'v1', credentials=creds)
-    media = MediaFileUpload(file_path, mimetype=content_type)
-    request = chat_service.media().upload(
-        parent=space_name,
-        body={'filename': filename},
-        media_body=media
-    )
-    return request.execute()
-
-async def upload_media_to_chat_async(creds, space_name, file_path, filename):
-    await pace_write()
-    try:
-        token = await asyncio.to_thread(sync_upload_media_to_chat, creds, space_name, file_path, filename)
-        mark_write_done()
-        return token, None
-    except Exception as e:
-        mark_write_done()
-        return None, str(e)
-
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    # ללא ניסיונות חוזרים ארוכים כדי למנוע עיכובים בדיווחי חדשות
     max_attempts = 1  
     last_error = "שגיאה לא ידועה"
     
@@ -164,7 +131,7 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
     try:
         async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=60) as res:
             status_code = res.status
-            if status_code in (200, 201):
+            if status_code == 200:
                 res_data = await res.json()
                 is_success = True
             else:
@@ -172,18 +139,37 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
                 last_error = f"HTTP {status_code} - {error_text}"
     except Exception as e:
         last_error = f"שגיאת רשת/מערכת: {str(e)}"
-    finally:
-        mark_write_done()
         
     if is_success:
         return True, res_data
             
     return False, f"נכשל סופית. שגיאה: {last_error}"
 
-async def send_chat_message(session, token, text, attachments):
+async def upload_media_to_chat(session, token, file_path, filename):
+    content_type = "application/octet-stream"
+    if filename.endswith(".mp4"): content_type = "video/mp4"
+    elif filename.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
+    elif filename.endswith(".png"): content_type = "image/png"
+    elif filename.endswith(".webp"): content_type = "image/webp"
+    elif filename.endswith(".mp3"): content_type = "audio/mpeg"
+    elif filename.endswith(".pdf"): content_type = "application/pdf"
+    
+    upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": content_type}
+
+    print(f"Uploading {filename} to {SPACE_NAME}...")
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+
+    success, res_data = await execute_request_with_official_backoff(session, 'POST', upload_url, headers, data=file_data)
+    if success:
+        return res_data.get('attachmentDataRef', {}).get('attachmentUploadToken'), None
+    return None, str(res_data)
+
+async def send_chat_message(session, token, text, attachment_tokens):
     payload = {"text": text}
-    if attachments:
-        payload["attachment"] = attachments
+    if attachment_tokens:
+        payload["attachment"] = [{"attachmentDataRef": {"attachmentUploadToken": t}} for t in attachment_tokens]
         
     msg_url = f"https://chat.googleapis.com/v1/{SPACE_NAME}/messages"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -216,7 +202,7 @@ async def main():
         await client.connect()
 
         for channel in TARGET_CHANNELS:
-            print(f"\\n--- Checking channel: {channel} ---")
+            print(f"\n--- Checking channel: {channel} ---")
             try:
                 entity = await client.get_entity(channel)
                 channel_title = entity.title
@@ -276,30 +262,31 @@ async def main():
                     if file_path:
                         filename = os.path.basename(file_path)
                         
-                        # כל הקבצים עד 200MB עולים ישירות לצ'אט (המגבלה הרשמית המקסימלית של Google Chat)
                         if file_size_mb > 200:
-                            print(" > גודל חורג מ-200MB (מקסימום של גוגל צ'אט), מגבה לתיקיית 'קבצים גדולים' בדרייב...")
+                            print(" > גודל חורג מ-200MB, מגבה לתיקיית 'קבצים גדולים' בדרייב...")
                             try:
                                 drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_LARGE)
                             except Exception as e:
                                 upload_errors.append(f"העלאת קובץ גדול לדרייב נכשלה: {e}")
                         else:
-                            uploaded_attachment, upload_error = await upload_media_to_chat_async(creds, SPACE_NAME, file_path, filename)
-                            if uploaded_attachment:
-                                attachment_tokens.append(uploaded_attachment)
-                                print(" > קובץ מדיה הועלה בהצלחה (מצורף ישירות להודעה בצ'אט)!")
+                            upload_token, upload_error = await upload_media_to_chat(aio_session, token, file_path, filename)
+                            if upload_token:
+                                attachment_tokens.append(upload_token)
+                                print(" > אסימון מדיה התקבל.")
                             elif upload_error:
-                                print(f" > שגיאה בהעלאה לצ'אט: {upload_error}. מגבה לדרייב...")
+                                print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לתיקיית 'גיבוי' בדרייב...")
                                 try:
                                     drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_BACKUP)
                                 except Exception as e:
                                     upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
+                        # הוספת אימוג'י החץ כקישור שקט לקובץ בדרייב בפורמט הנתמך של גוגל צ'אט
                         if drive_link:
-                            clean_msg += f"\n\n📹 *לצפייה בסרטון / קובץ בדרייב:*\n{drive_link}"
-                        elif attachment_tokens:
-                            # מרווח יזום של שניה אחת + מילי-שניות רנדומליות בין העלאת המדיה לשליחת ההודעה
-                            await asyncio.sleep(1.0 + random.uniform(0.1, 0.3))
+                            drive_icon = f"<{drive_link}|⬇️>"
+                            if clean_msg:
+                                clean_msg += f"\n\n{drive_icon}"
+                            else:
+                                clean_msg = drive_icon
 
                     if not clean_msg and not attachment_tokens and not drive_link and not upload_errors:
                         highest_id_processed = max(highest_id_processed, message.id)
@@ -309,16 +296,12 @@ async def main():
                         continue
 
                     formatted_text = f"📢 *{channel_title}*\n\n{clean_msg}" if clean_msg else f"📢 *{channel_title}*\n\n_[הודעת מדיה ללא טקסט]_"
-                    if upload_errors:
-                        formatted_text += f"\n\n⚠️ _הערת מערכת: לא ניתן היה לצרף את הקובץ המקורי ({upload_errors[0]})_"
                     
                     success, send_error = await send_chat_message(aio_session, token, formatted_text, attachment_tokens)
                     if success:
                         highest_id_processed = max(highest_id_processed, message.id)
                         if clean_msg:
                             states["global_seen_texts"].append(clean_msg)
-                        # מרווח יזום של שניה אחת + מילי-שניות רנדומליות בין הודעה להודעה הבאה למניעת עומס רגעי
-                        await asyncio.sleep(1.0 + random.uniform(0.2, 0.5))
                     else:
                         print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לתיקיית 'גיבוי' בדרייב...")
                         temp_txt_filename = f"Message_{channel_title}_{message.id}.txt"
