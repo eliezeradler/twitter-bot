@@ -119,9 +119,6 @@ async def upload_to_drive_async(creds, file_path, filename, folder_id=None):
     return await asyncio.to_thread(sync_upload_to_drive, creds, file_path, filename, folder_id)
 
 async def execute_request_with_official_backoff(session, method, url, headers, data=None, json_payload=None):
-    max_attempts = 1  
-    last_error = "שגיאה לא ידועה"
-    
     await pace_write()
     status_code = 0
     error_text = ""
@@ -249,7 +246,6 @@ async def main():
                             
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
-                            # פסק זמן אחיד של 15 דקות לכלל ההורדות מטלגרם
                             download_timeout = 900
                             file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
                         except asyncio.TimeoutError:
@@ -280,13 +276,12 @@ async def main():
                                 except Exception as e:
                                     upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
-                        # הוספת אימוג'י החץ כקישור שקט לקובץ בדרייב בפורמט הנתמך של גוגל צ'אט
+                        # הצגת הקישור המלא כדי לאפשר תצוגה מקדימה
                         if drive_link:
-                            drive_icon = f"<{drive_link}|⬇️>"
                             if clean_msg:
-                                clean_msg += f"\n\n{drive_icon}"
+                                clean_msg += f"\n\n{drive_link}"
                             else:
-                                clean_msg = drive_icon
+                                clean_msg = drive_link
 
                     if not clean_msg and not attachment_tokens and not drive_link and not upload_errors:
                         highest_id_processed = max(highest_id_processed, message.id)
