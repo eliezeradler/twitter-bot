@@ -8,6 +8,7 @@ import difflib
 import aiohttp
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -81,6 +82,17 @@ def clean_text(text):
     text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
     return text
 
+def make_safe_filename_from_text(text, fallback_filename):
+    if not text:
+        return fallback_filename
+    _, ext = os.path.splitext(fallback_filename)
+    clean_title = text.replace('*', '')
+    clean_title = re.sub(r'[\\/*?:"<>|\r\n]+', ' ', clean_title).strip()
+    clean_title = re.sub(r'\s+', ' ', clean_title)
+    if not clean_title:
+        return fallback_filename
+    return f"{clean_title[:100].strip()}{ext}"
+
 def is_too_similar(new_text, seen_texts, threshold=0.70):
     if not new_text: return False
     check_text = new_text[:200]
@@ -124,6 +136,7 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
     error_text = ""
     is_success = False
     res_data = None
+    last_error = "שגיאה לא ידועה"
     
     try:
         async with session.request(method, url, headers=headers, data=data, json=json_payload, timeout=60) as res:
@@ -144,12 +157,13 @@ async def execute_request_with_official_backoff(session, method, url, headers, d
 
 async def upload_media_to_chat(session, token, file_path, filename):
     content_type = "application/octet-stream"
-    if filename.endswith(".mp4"): content_type = "video/mp4"
-    elif filename.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
-    elif filename.endswith(".png"): content_type = "image/png"
-    elif filename.endswith(".webp"): content_type = "image/webp"
-    elif filename.endswith(".mp3"): content_type = "audio/mpeg"
-    elif filename.endswith(".pdf"): content_type = "application/pdf"
+    lower_name = filename.lower()
+    if lower_name.endswith(".mp4"): content_type = "video/mp4"
+    elif lower_name.endswith((".jpg", ".jpeg")): content_type = "image/jpeg"
+    elif lower_name.endswith(".png"): content_type = "image/png"
+    elif lower_name.endswith(".webp"): content_type = "image/webp"
+    elif lower_name.endswith(".mp3"): content_type = "audio/mpeg"
+    elif lower_name.endswith(".pdf"): content_type = "application/pdf"
     
     upload_url = f"https://chat.googleapis.com/upload/v1/{SPACE_NAME}/attachments:upload?filename={filename}&uploadType=media"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": content_type}
@@ -239,7 +253,12 @@ async def main():
                     upload_errors = []
                     drive_link = None
 
-                    if message.media:
+                    # טקסט ההודעה המלא שעולה לצ'אט (לפני הוספת קישור הדרייב) שישמש כשם הקובץ בדרייב
+                    chat_text_for_filename = f"{channel_title} - {clean_msg}" if clean_msg else channel_title
+
+                    has_real_media = isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument))
+
+                    if has_real_media:
                         file_size_mb = 0
                         if hasattr(message, 'file') and message.file and message.file.size:
                             file_size_mb = message.file.size / (1024 * 1024)
@@ -247,7 +266,10 @@ async def main():
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
                             download_timeout = 900
-                            file_path = await asyncio.wait_for(client.download_media(message), timeout=download_timeout)
+                            file_path = await asyncio.wait_for(
+                                client.download_media(message, thumb=-1),
+                                timeout=download_timeout
+                            )
                         except asyncio.TimeoutError:
                             print(" > שגיאה: הורדת הקובץ מטלגרם לקחה יותר מדי זמן ונקטעה.")
                             upload_errors.append("שגיאת רשת: זמן הורדת הקובץ מטלגרם חרג מ-15 דקות.")
@@ -257,11 +279,12 @@ async def main():
 
                     if file_path:
                         filename = os.path.basename(file_path)
+                        drive_filename = make_safe_filename_from_text(chat_text_for_filename, filename)
                         
                         if file_size_mb > 200:
                             print(" > גודל חורג מ-200MB, מגבה לתיקיית 'קבצים גדולים' בדרייב...")
                             try:
-                                drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_LARGE)
+                                drive_link = await upload_to_drive_async(creds, file_path, drive_filename, folder_id=DRIVE_FOLDER_LARGE)
                             except Exception as e:
                                 upload_errors.append(f"העלאת קובץ גדול לדרייב נכשלה: {e}")
                         else:
@@ -272,11 +295,10 @@ async def main():
                             elif upload_error:
                                 print(f" > שגיאה בהעלאה לצ'אט ({upload_error}). מפעיל גיבוי לתיקיית 'גיבוי' בדרייב...")
                                 try:
-                                    drive_link = await upload_to_drive_async(creds, file_path, filename, folder_id=DRIVE_FOLDER_BACKUP)
+                                    drive_link = await upload_to_drive_async(creds, file_path, drive_filename, folder_id=DRIVE_FOLDER_BACKUP)
                                 except Exception as e:
                                     upload_errors.append(f"כשל כפול (צ'אט + דרייב): {upload_error} | {e}")
 
-                        # הצגת הקישור המלא כדי לאפשר תצוגה מקדימה
                         if drive_link:
                             if clean_msg:
                                 clean_msg += f"\n\n{drive_link}"
@@ -299,19 +321,20 @@ async def main():
                             states["global_seen_texts"].append(clean_msg)
                     else:
                         print(f"Message failed: {send_error}. מפעיל גיבוי טקסט לתיקיית 'גיבוי' בדרייב...")
-                        temp_txt_filename = f"Message_{channel_title}_{message.id}.txt"
+                        temp_local_txt = f"temp_msg_{message.id}.txt"
+                        txt_drive_filename = make_safe_filename_from_text(chat_text_for_filename, f"Message_{channel_title}_{message.id}.txt")
                         try:
-                            with open(temp_txt_filename, 'w', encoding='utf-8') as tf:
+                            with open(temp_local_txt, 'w', encoding='utf-8') as tf:
                                 tf.write(formatted_text)
-                            text_drive_link = await upload_to_drive_async(creds, temp_txt_filename, temp_txt_filename, folder_id=DRIVE_FOLDER_BACKUP)
+                            text_drive_link = await upload_to_drive_async(creds, temp_local_txt, txt_drive_filename, folder_id=DRIVE_FOLDER_BACKUP)
                             print(f" > הודעת הטקסט הועלתה לדרייב בהצלחה: {text_drive_link}")
                             if clean_msg:
                                 states["global_seen_texts"].append(clean_msg)
                         except Exception as e:
                             print(f" > שגיאה בהעלאת הודעת הטקסט לדרייב: {e}")
                         finally:
-                            if os.path.exists(temp_txt_filename):
-                                try: os.remove(temp_txt_filename)
+                            if os.path.exists(temp_local_txt):
+                                try: os.remove(temp_local_txt)
                                 except: pass
                             
                             highest_id_processed = max(highest_id_processed, message.id)
