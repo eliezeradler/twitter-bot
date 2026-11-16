@@ -253,7 +253,6 @@ async def main():
                     upload_errors = []
                     drive_link = None
 
-                    # טקסט ההודעה המלא שעולה לצ'אט (לפני הוספת קישור הדרייב) שישמש כשם הקובץ בדרייב
                     chat_text_for_filename = f"{channel_title} - {clean_msg}" if clean_msg else channel_title
 
                     has_real_media = isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument))
@@ -266,8 +265,9 @@ async def main():
                         print(f"Downloading media ({file_size_mb:.1f}MB)...")
                         try:
                             download_timeout = 900
+                            # ללא thumb=-1 כדי להוריד את הקובץ המקורי המלא ולא תמונה ממוזערת
                             file_path = await asyncio.wait_for(
-                                client.download_media(message, thumb=-1),
+                                client.download_media(message),
                                 timeout=download_timeout
                             )
                         except asyncio.TimeoutError:
